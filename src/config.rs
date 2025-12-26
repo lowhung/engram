@@ -83,7 +83,7 @@ impl Default for CaptureConfig {
 }
 
 fn default_topic() -> String {
-    "buswatch.snapshot".to_string()
+    "caryatid.monitor.snapshot".to_string()
 }
 
 fn default_count() -> usize {

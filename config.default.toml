@@ -9,7 +9,7 @@ exchange = "caryatid"
 
 # Default topic to subscribe to for snapshots
 [capture]
-topic = "buswatch.snapshot"
+topic = "caryatid.monitor.snapshot"
 # Number of snapshots to capture
 count = 10
 # Interval between snapshots in seconds
