@@ -2,6 +2,7 @@
 
 use anyhow::Result;
 use clap::{Parser, ValueEnum};
+use engram::config::EngramConfig;
 use engram::generators::glyph::{GlyphGenerator, GlyphStyle};
 use engram::generators::stipple::{StippleGenerator, StippleStyle};
 use engram::generators::svg_lines::{LineStyle, SvgLineGenerator};
@@ -9,7 +10,7 @@ use engram::generators::Generator;
 use engram::metrics::NeuralMetrics;
 use neuronic::{capture_snapshots, AggregatedMetrics, CaptureConfig, SubscriberConfig};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 #[derive(Parser)]
@@ -17,6 +18,10 @@ use std::time::Duration;
 #[command(about = "Generate art from neural network activity metrics")]
 #[command(version)]
 struct Cli {
+    /// Config file path
+    #[arg(long, default_value = "engram.toml")]
+    config: PathBuf,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -26,8 +31,8 @@ enum Commands {
     /// Generate a single piece from random/sample data
     Generate {
         /// Generator type to use
-        #[arg(short, long, value_enum, default_value = "dendrite")]
-        generator: GeneratorType,
+        #[arg(short, long, value_enum)]
+        generator: Option<GeneratorType>,
 
         /// Output file path
         #[arg(short, long)]
@@ -37,52 +42,52 @@ enum Commands {
         #[arg(short, long)]
         seed: Option<u64>,
 
-        /// Width of the output (for SVG generators)
-        #[arg(long, default_value = "512")]
-        width: u32,
+        /// Width of the output
+        #[arg(long)]
+        width: Option<u32>,
 
-        /// Height of the output (for SVG generators)
-        #[arg(long, default_value = "512")]
-        height: u32,
+        /// Height of the output
+        #[arg(long)]
+        height: Option<u32>,
     },
 
     /// Capture live metrics from neuronic/RabbitMQ and generate art
     Capture {
         /// RabbitMQ URL
-        #[arg(long, default_value = "amqp://guest:guest@localhost:5672")]
-        rabbitmq_url: String,
+        #[arg(long)]
+        rabbitmq_url: Option<String>,
 
         /// RabbitMQ exchange
-        #[arg(long, default_value = "amq.topic")]
-        exchange: String,
+        #[arg(long)]
+        exchange: Option<String>,
 
         /// Topic pattern to subscribe to
-        #[arg(short, long, default_value = "buswatch.snapshot")]
-        topic: String,
+        #[arg(short, long)]
+        topic: Option<String>,
 
         /// Number of snapshots to capture
-        #[arg(short, long, default_value = "10")]
-        count: usize,
+        #[arg(short, long)]
+        count: Option<usize>,
 
         /// Interval between snapshots in seconds
-        #[arg(short, long, default_value = "1")]
-        interval: u64,
+        #[arg(short, long)]
+        interval: Option<u64>,
 
         /// Generator type to use
-        #[arg(short, long, value_enum, default_value = "dendrite")]
-        generator: GeneratorType,
+        #[arg(short, long, value_enum)]
+        generator: Option<GeneratorType>,
 
         /// Output file path
         #[arg(short, long)]
         output: Option<PathBuf>,
 
         /// Width of the output
-        #[arg(long, default_value = "512")]
-        width: u32,
+        #[arg(long)]
+        width: Option<u32>,
 
         /// Height of the output
-        #[arg(long, default_value = "512")]
-        height: u32,
+        #[arg(long)]
+        height: Option<u32>,
 
         /// Also save metrics as JSON
         #[arg(long)]
@@ -96,31 +101,31 @@ enum Commands {
         count: usize,
 
         /// Generator type to use
-        #[arg(short, long, value_enum, default_value = "dendrite")]
-        generator: GeneratorType,
+        #[arg(short, long, value_enum)]
+        generator: Option<GeneratorType>,
 
         /// Output directory
-        #[arg(short, long, default_value = "output")]
-        output_dir: PathBuf,
+        #[arg(short, long)]
+        output_dir: Option<PathBuf>,
 
         /// Starting seed
         #[arg(short, long, default_value = "0")]
         start_seed: u64,
 
         /// Width of the output
-        #[arg(long, default_value = "512")]
-        width: u32,
+        #[arg(long)]
+        width: Option<u32>,
 
         /// Height of the output
-        #[arg(long, default_value = "512")]
-        height: u32,
+        #[arg(long)]
+        height: Option<u32>,
     },
 
     /// Generate samples of all generator types
     Showcase {
         /// Output directory
-        #[arg(short, long, default_value = "output/showcase")]
-        output_dir: PathBuf,
+        #[arg(short, long)]
+        output_dir: Option<PathBuf>,
 
         /// Seed for consistent results
         #[arg(short, long, default_value = "42")]
@@ -128,7 +133,7 @@ enum Commands {
     },
 }
 
-#[derive(Clone, ValueEnum)]
+#[derive(Clone, ValueEnum, Debug)]
 enum GeneratorType {
     // Glyph styles
     GlyphMinimal,
@@ -151,6 +156,25 @@ enum GeneratorType {
 }
 
 impl GeneratorType {
+    fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "glyph_minimal" | "glyph-minimal" => Some(Self::GlyphMinimal),
+            "glyph_circuit" | "glyph-circuit" => Some(Self::GlyphCircuit),
+            "glyph_stipple" | "glyph-stipple" => Some(Self::GlyphStipple),
+            "glyph_neural" | "glyph-neural" => Some(Self::GlyphNeural),
+            "glyph_adaptive" | "glyph-adaptive" => Some(Self::GlyphAdaptive),
+            "flow" => Some(Self::Flow),
+            "dendrite" => Some(Self::Dendrite),
+            "radial" => Some(Self::Radial),
+            "grid" => Some(Self::Grid),
+            "stipple_gradient" | "stipple-gradient" => Some(Self::StippleGradient),
+            "stipple_clustered" | "stipple-clustered" => Some(Self::StippleClustered),
+            "stipple_flow" | "stipple-flow" => Some(Self::StippleFlow),
+            "halftone" => Some(Self::Halftone),
+            _ => None,
+        }
+    }
+
     fn name(&self) -> &'static str {
         match self {
             GeneratorType::GlyphMinimal => "glyph_minimal",
@@ -240,6 +264,10 @@ impl GeneratorType {
     }
 }
 
+fn get_default_generator(config: &EngramConfig) -> GeneratorType {
+    GeneratorType::from_str(&config.generator.default).unwrap_or(GeneratorType::Dendrite)
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     // Initialize logging
@@ -252,6 +280,9 @@ async fn main() -> Result<()> {
 
     let cli = Cli::parse();
 
+    // Load configuration
+    let config = EngramConfig::load(Path::new(&cli.config))?;
+
     match cli.command {
         Commands::Generate {
             generator,
@@ -260,6 +291,10 @@ async fn main() -> Result<()> {
             width,
             height,
         } => {
+            let generator = generator.unwrap_or_else(|| get_default_generator(&config));
+            let width = width.unwrap_or(config.output.width);
+            let height = height.unwrap_or(config.output.height);
+
             let gen = generator.create(width, height);
             let seed = seed.unwrap_or_else(rand::random);
             let metrics = NeuralMetrics::sample(seed);
@@ -286,6 +321,16 @@ async fn main() -> Result<()> {
             height,
             save_metrics,
         } => {
+            let rabbitmq_url = rabbitmq_url.unwrap_or_else(|| config.rabbitmq.url.clone());
+            let exchange = exchange.unwrap_or_else(|| config.rabbitmq.exchange.clone());
+            let topic = topic.unwrap_or_else(|| config.capture.topic.clone());
+            let count = count.unwrap_or(config.capture.count);
+            let interval = interval.unwrap_or(config.capture.interval);
+            let generator = generator.unwrap_or_else(|| get_default_generator(&config));
+            let width = width.unwrap_or(config.output.width);
+            let height = height.unwrap_or(config.output.height);
+            let save_metrics = save_metrics || config.output.save_metrics;
+
             println!("Connecting to RabbitMQ at {}...", rabbitmq_url);
             println!("Subscribing to topic: {}", topic);
             println!(
@@ -301,7 +346,7 @@ async fn main() -> Result<()> {
             let capture_config = CaptureConfig {
                 count,
                 interval: Duration::from_secs(interval),
-                timeout: Duration::from_secs(30),
+                timeout: Duration::from_secs(config.capture.timeout),
                 ..Default::default()
             };
 
@@ -360,6 +405,11 @@ async fn main() -> Result<()> {
             width,
             height,
         } => {
+            let generator = generator.unwrap_or_else(|| get_default_generator(&config));
+            let output_dir = output_dir.unwrap_or_else(|| PathBuf::from(&config.output.directory));
+            let width = width.unwrap_or(config.output.width);
+            let height = height.unwrap_or(config.output.height);
+
             fs::create_dir_all(&output_dir)?;
 
             let gen = generator.create(width, height);
@@ -383,6 +433,11 @@ async fn main() -> Result<()> {
         }
 
         Commands::Showcase { output_dir, seed } => {
+            let output_dir = output_dir
+                .unwrap_or_else(|| PathBuf::from(&config.output.directory).join("showcase"));
+            let width = config.output.width;
+            let height = config.output.height;
+
             fs::create_dir_all(&output_dir)?;
 
             let metrics = NeuralMetrics::sample(seed);
@@ -390,7 +445,7 @@ async fn main() -> Result<()> {
             println!("Metrics: {:?}", metrics);
 
             for gen_type in GeneratorType::all() {
-                let gen = gen_type.create(512, 512);
+                let gen = gen_type.create(width, height);
                 let result = gen.generate(&metrics);
 
                 let filename = format!("{}.{}", gen_type.name(), gen.extension());
