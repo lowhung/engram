@@ -6,6 +6,12 @@ description = "Generative art from neural network activity metrics"
 license = "MIT"
 
 [dependencies]
+# Neuronic for live message bus metrics
+neuronic = { path = "../neuronic" }
+
+# Async runtime (needed for neuronic subscriber)
+tokio = { version = "1", features = ["full"] }
+
 # Random number generation with seedable RNG
 rand = "0.8"
 
@@ -24,3 +30,10 @@ image = "0.25"
 
 # Hash for deterministic generation from inputs
 sha2 = "0.10"
+
+# Error handling
+anyhow = "1"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
