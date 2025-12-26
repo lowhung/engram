@@ -1,0 +1,26 @@
+[package]
+name = "engram"
+version = "0.1.0"
+edition = "2021"
+description = "Generative art from neural network activity metrics"
+license = "MIT"
+
+[dependencies]
+# Random number generation with seedable RNG
+rand = "0.8"
+
+# SVG generation
+svg = "0.17"
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# Serialization for metrics input
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Image output (for rasterized versions)
+image = "0.25"
+
+# Hash for deterministic generation from inputs
+sha2 = "0.10"
