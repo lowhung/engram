@@ -4,8 +4,10 @@
 //! pieces by encoding neural activity patterns into minimalist black
 //! and white art.
 
+pub mod config;
 pub mod generators;
 pub mod metrics;
 
+pub use config::EngramConfig;
 pub use generators::Generator;
 pub use metrics::{NeuralMetrics, NormalizedMetrics};
