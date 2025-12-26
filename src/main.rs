@@ -4,6 +4,7 @@ use anyhow::Result;
 use clap::{Parser, ValueEnum};
 use engram::config::EngramConfig;
 use engram::generators::glyph::{GlyphGenerator, GlyphStyle};
+use engram::generators::interference::{InterferenceGenerator, InterferenceStyle};
 use engram::generators::stipple::{StippleGenerator, StippleStyle};
 use engram::generators::svg_lines::{LineStyle, SvgLineGenerator};
 use engram::generators::Generator;
@@ -153,6 +154,12 @@ enum GeneratorType {
     StippleClustered,
     StippleFlow,
     Halftone,
+
+    // Interference styles
+    Ripples,
+    Rays,
+    Combined,
+    WaveGrid,
 }
 
 impl GeneratorType {
@@ -171,6 +178,10 @@ impl GeneratorType {
             "stipple_clustered" | "stipple-clustered" => Some(Self::StippleClustered),
             "stipple_flow" | "stipple-flow" => Some(Self::StippleFlow),
             "halftone" => Some(Self::Halftone),
+            "ripples" => Some(Self::Ripples),
+            "rays" => Some(Self::Rays),
+            "combined" => Some(Self::Combined),
+            "wave_grid" | "wave-grid" | "wavegrid" => Some(Self::WaveGrid),
             _ => None,
         }
     }
@@ -190,6 +201,10 @@ impl GeneratorType {
             GeneratorType::StippleClustered => "stipple_clustered",
             GeneratorType::StippleFlow => "stipple_flow",
             GeneratorType::Halftone => "halftone",
+            GeneratorType::Ripples => "ripples",
+            GeneratorType::Rays => "rays",
+            GeneratorType::Combined => "combined",
+            GeneratorType::WaveGrid => "wave_grid",
         }
     }
 
@@ -242,6 +257,26 @@ impl GeneratorType {
             GeneratorType::Halftone => {
                 Box::new(StippleGenerator::new(width, height, StippleStyle::Halftone))
             }
+            GeneratorType::Ripples => Box::new(InterferenceGenerator::new(
+                width,
+                height,
+                InterferenceStyle::Ripples,
+            )),
+            GeneratorType::Rays => Box::new(InterferenceGenerator::new(
+                width,
+                height,
+                InterferenceStyle::Rays,
+            )),
+            GeneratorType::Combined => Box::new(InterferenceGenerator::new(
+                width,
+                height,
+                InterferenceStyle::Combined,
+            )),
+            GeneratorType::WaveGrid => Box::new(InterferenceGenerator::new(
+                width,
+                height,
+                InterferenceStyle::WaveGrid,
+            )),
         }
     }
 
@@ -260,6 +295,10 @@ impl GeneratorType {
             GeneratorType::StippleClustered,
             GeneratorType::StippleFlow,
             GeneratorType::Halftone,
+            GeneratorType::Ripples,
+            GeneratorType::Rays,
+            GeneratorType::Combined,
+            GeneratorType::WaveGrid,
         ]
     }
 }

@@ -1,6 +1,7 @@
 //! Art generators - each produces a different visual style from neural metrics.
 
 pub mod glyph;
+pub mod interference;
 pub mod stipple;
 pub mod svg_lines;
 
