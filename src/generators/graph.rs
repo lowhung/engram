@@ -1425,8 +1425,8 @@ impl GraphGenerator {
         let padding = 150.0 * scale;
 
         let n = graph.nodes.len();
-        // Grid size: enough slots for all nodes with some empty space
-        let grid_size = ((n as f64 * 1.5).sqrt().ceil() as usize).max(3);
+        // Grid size: use more slots for extra spacing between nodes
+        let grid_size = ((n as f64 * 2.5).sqrt().ceil() as usize).max(4);
 
         let cell_w = (self.width as f64 - padding * 2.0) / grid_size as f64;
         let cell_h = (self.height as f64 - padding * 2.0) / grid_size as f64;
