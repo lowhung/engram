@@ -1423,12 +1423,19 @@ impl GraphGenerator {
         let graph = &metrics.graph;
         let scale = self.scale();
 
-        // Random density: 1.1 = tight/clustered, 2.0 = very spread out
-        let density_factor = rng.gen_range(1.1..2.0);
-        let padding = rng.gen_range(60.0..120.0) * scale;
+        // Density based on metrics:
+        // - High branching_factor (many connections) = spread out for clarity
+        // - High synapse_rate (busy) = spread out for clarity
+        // - High activity_skew (concentrated) = tighter layout
+        let branching_spread = (metrics.branching_factor / 4.0).min(1.0) * 0.4; // 0-0.4
+        let rate_spread = (metrics.synapse_rate / 300.0).min(1.0) * 0.3; // 0-0.3
+        let skew_tight = metrics.activity_skew * 0.3; // 0-0.3 (subtracts)
+
+        let density_factor = (1.2 + branching_spread + rate_spread - skew_tight).clamp(1.1, 2.0);
+        let padding = (60.0 + branching_spread * 60.0) * scale; // 60-84 based on branching
 
         let n = graph.nodes.len();
-        // Grid size varies based on random density
+        // Grid size varies based on metric-driven density
         let grid_size = ((n as f64 * density_factor).sqrt().ceil() as usize).max(3);
 
         let cell_w = (self.width as f64 - padding * 2.0) / grid_size as f64;
