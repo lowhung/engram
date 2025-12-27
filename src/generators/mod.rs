@@ -1,9 +1,6 @@
-//! Art generators - each produces a different visual style from neural metrics.
+//! Art generators - visualize neural network topology as dendrite-like graphs.
 
-pub mod glyph;
-pub mod interference;
-pub mod stipple;
-pub mod svg_lines;
+pub mod graph;
 
 use crate::metrics::NeuralMetrics;
 
@@ -13,7 +10,6 @@ pub trait Generator {
     fn name(&self) -> &'static str;
 
     /// Generate art from the given metrics.
-    /// Returns the output as a string (ASCII, SVG, etc.)
     fn generate(&self, metrics: &NeuralMetrics) -> String;
 
     /// File extension for this generator's output.

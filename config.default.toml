@@ -1,44 +1,35 @@
 # Engram Default Configuration
 # Copy this file to engram.toml and adjust as needed.
-# All settings can also be overridden via environment variables with the ENGRAM_ prefix.
 
 # RabbitMQ connection settings (for live capture)
 [rabbitmq]
 url = "amqp://127.0.0.1:5672/%2f"
 exchange = "caryatid"
 
-# Default topic to subscribe to for snapshots
+# Snapshot capture settings
 [capture]
 topic = "caryatid.monitor.snapshot"
-# Number of snapshots to capture
 count = 10
-# Interval between snapshots in seconds
 interval = 1
-# Timeout waiting for first snapshot in seconds
 timeout = 30
 
-# Topic filtering - topics to ignore when capturing
+# Topic filtering
 [filter]
 ignored_topics = ["cardano.query."]
 
-# Default output settings
+# Output settings
 [output]
-# Default output directory for batch generation
 directory = "output"
-# Default image dimensions
 width = 512
 height = 512
-# Whether to save metrics JSON alongside generated art
 save_metrics = false
 
-# Generator defaults
+# Generator settings
+# Styles: organic, circular, hierarchical, constellation
 [generator]
-# Default generator type: glyph_minimal, glyph_circuit, glyph_stipple, glyph_neural,
-# glyph_adaptive, flow, dendrite, radial, grid, stipple_gradient, stipple_clustered,
-# stipple_flow, halftone
-default = "dendrite"
+default = "organic"
 
-# Health thresholds (inherited from neuronic)
+# Health thresholds
 [health]
 backlog_warning = 100
 backlog_critical = 1000

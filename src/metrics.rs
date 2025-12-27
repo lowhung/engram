@@ -6,6 +6,239 @@
 use neuronic::{AggregatedMetrics, GraphSnapshot};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::collections::{HashMap, HashSet};
+
+/// A node in the adjacency graph with its topic connections.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GraphNode {
+    /// Module name.
+    pub name: String,
+    /// Topics this module reads from.
+    pub reads: Vec<String>,
+    /// Topics this module writes to.
+    pub writes: Vec<String>,
+    /// Activity rate if available.
+    pub rate: Option<f64>,
+    /// Total messages processed.
+    pub throughput: u64,
+}
+
+/// An edge representing a connection between two modules via a topic.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GraphEdge {
+    /// Source module (producer).
+    pub source: String,
+    /// Target module (consumer).
+    pub target: String,
+    /// Topic connecting them.
+    pub topic: String,
+    /// Message rate on this connection.
+    pub rate: Option<f64>,
+}
+
+/// The adjacency graph representing module connections.
+///
+/// Derived from neuronic snapshots by matching producers to consumers
+/// via shared topics.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AdjacencyGraph {
+    /// All nodes (modules) in the graph.
+    pub nodes: Vec<GraphNode>,
+    /// All edges (topic connections between modules).
+    pub edges: Vec<GraphEdge>,
+    /// Map from topic name to producers.
+    pub producers: HashMap<String, Vec<String>>,
+    /// Map from topic name to consumers.
+    pub consumers: HashMap<String, Vec<String>>,
+}
+
+impl AdjacencyGraph {
+    /// Build an adjacency graph from a neuronic snapshot.
+    pub fn from_snapshot(snapshot: &GraphSnapshot) -> Self {
+        let mut producers: HashMap<String, Vec<String>> = HashMap::new();
+        let mut consumers: HashMap<String, Vec<String>> = HashMap::new();
+
+        // Build nodes and collect topic relationships
+        let nodes: Vec<GraphNode> = snapshot
+            .nodes
+            .iter()
+            .map(|n| {
+                // Register as producer for write topics
+                for topic in &n.write_topics {
+                    producers
+                        .entry(topic.clone())
+                        .or_default()
+                        .push(n.name.clone());
+                }
+                // Register as consumer for read topics
+                for topic in &n.read_topics {
+                    consumers
+                        .entry(topic.clone())
+                        .or_default()
+                        .push(n.name.clone());
+                }
+
+                GraphNode {
+                    name: n.name.clone(),
+                    reads: n.read_topics.clone(),
+                    writes: n.write_topics.clone(),
+                    rate: n.rate(),
+                    throughput: n.throughput(),
+                }
+            })
+            .collect();
+
+        // Build edges by matching producers to consumers
+        let mut edges = Vec::new();
+        for (topic, topic_producers) in &producers {
+            if let Some(topic_consumers) = consumers.get(topic) {
+                for producer in topic_producers {
+                    for consumer in topic_consumers {
+                        // Skip self-loops
+                        if producer != consumer {
+                            // Find rate from the topic edge in the snapshot
+                            let rate = snapshot
+                                .edges
+                                .iter()
+                                .find(|e| &e.topic == topic)
+                                .and_then(|e| e.rate);
+
+                            edges.push(GraphEdge {
+                                source: producer.clone(),
+                                target: consumer.clone(),
+                                topic: topic.clone(),
+                                rate,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+        Self {
+            nodes,
+            edges,
+            producers,
+            consumers,
+        }
+    }
+
+    /// Get all unique topics in the graph.
+    pub fn topics(&self) -> Vec<String> {
+        let mut topics: HashSet<String> = HashSet::new();
+        for node in &self.nodes {
+            topics.extend(node.reads.iter().cloned());
+            topics.extend(node.writes.iter().cloned());
+        }
+        let mut result: Vec<String> = topics.into_iter().collect();
+        result.sort();
+        result
+    }
+
+    /// Get modules that a given module sends to (via topics).
+    pub fn outgoing(&self, module: &str) -> Vec<&str> {
+        self.edges
+            .iter()
+            .filter(|e| e.source == module)
+            .map(|e| e.target.as_str())
+            .collect()
+    }
+
+    /// Get modules that send to a given module (via topics).
+    pub fn incoming(&self, module: &str) -> Vec<&str> {
+        self.edges
+            .iter()
+            .filter(|e| e.target == module)
+            .map(|e| e.source.as_str())
+            .collect()
+    }
+
+    /// Generate sample adjacency graph for testing.
+    pub fn sample(seed: u64) -> Self {
+        use rand::{Rng, SeedableRng};
+        let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
+
+        let node_count = rng.gen_range(5..15);
+        let topic_count = rng.gen_range(3..10);
+
+        // Generate topic names
+        let topics: Vec<String> = (0..topic_count).map(|i| format!("topic.{}", i)).collect();
+
+        // Generate nodes with random topic subscriptions
+        let mut producers: HashMap<String, Vec<String>> = HashMap::new();
+        let mut consumers: HashMap<String, Vec<String>> = HashMap::new();
+
+        let nodes: Vec<GraphNode> = (0..node_count)
+            .map(|i| {
+                let name = format!("module_{}", i);
+
+                // Each node writes to 1-3 topics
+                let write_count = rng.gen_range(1..=3.min(topic_count));
+                let writes: Vec<String> = (0..write_count)
+                    .map(|_| topics[rng.gen_range(0..topic_count)].clone())
+                    .collect::<HashSet<_>>()
+                    .into_iter()
+                    .collect();
+
+                // Each node reads from 1-3 topics
+                let read_count = rng.gen_range(1..=3.min(topic_count));
+                let reads: Vec<String> = (0..read_count)
+                    .map(|_| topics[rng.gen_range(0..topic_count)].clone())
+                    .collect::<HashSet<_>>()
+                    .into_iter()
+                    .collect();
+
+                // Register relationships
+                for topic in &writes {
+                    producers
+                        .entry(topic.clone())
+                        .or_default()
+                        .push(name.clone());
+                }
+                for topic in &reads {
+                    consumers
+                        .entry(topic.clone())
+                        .or_default()
+                        .push(name.clone());
+                }
+
+                GraphNode {
+                    name,
+                    reads,
+                    writes,
+                    rate: Some(rng.gen_range(10.0..500.0)),
+                    throughput: rng.gen_range(1000..100000),
+                }
+            })
+            .collect();
+
+        // Build edges
+        let mut edges = Vec::new();
+        for (topic, topic_producers) in &producers {
+            if let Some(topic_consumers) = consumers.get(topic) {
+                for producer in topic_producers {
+                    for consumer in topic_consumers {
+                        if producer != consumer {
+                            edges.push(GraphEdge {
+                                source: producer.clone(),
+                                target: consumer.clone(),
+                                topic: topic.clone(),
+                                rate: Some(rng.gen_range(10.0..200.0)),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+        Self {
+            nodes,
+            edges,
+            producers,
+            consumers,
+        }
+    }
+}
 
 /// Core metrics captured from neural network activity.
 ///
@@ -41,6 +274,8 @@ pub struct NeuralMetrics {
     pub node_names: Vec<String>,
     /// Names of topics (for deterministic hashing).
     pub topic_names: Vec<String>,
+    /// The adjacency graph with full topology information.
+    pub graph: AdjacencyGraph,
 }
 
 impl NeuralMetrics {
@@ -48,6 +283,9 @@ impl NeuralMetrics {
     pub fn from_snapshot(snapshot: &GraphSnapshot) -> Self {
         let node_count = snapshot.node_count as u32;
         let connection_count = snapshot.edge_count as u32;
+
+        // Build the adjacency graph
+        let graph = AdjacencyGraph::from_snapshot(snapshot);
 
         // Calculate activity skew from rate distribution
         let rates: Vec<f64> = snapshot.nodes.iter().filter_map(|n| n.rate()).collect();
@@ -97,6 +335,7 @@ impl NeuralMetrics {
             total_throughput: snapshot.total_reads + snapshot.total_writes,
             node_names: snapshot.nodes.iter().map(|n| n.name.clone()).collect(),
             topic_names: snapshot.edges.iter().map(|e| e.topic.clone()).collect(),
+            graph,
         }
     }
 
@@ -104,6 +343,13 @@ impl NeuralMetrics {
     ///
     /// This provides richer data from observing the system over time.
     pub fn from_aggregated(agg: &AggregatedMetrics, snapshots: &[GraphSnapshot]) -> Self {
+        // Use last snapshot for the graph (most complete picture)
+        let graph = if let Some(last) = snapshots.last() {
+            AdjacencyGraph::from_snapshot(last)
+        } else {
+            AdjacencyGraph::sample(0)
+        };
+
         // Use first snapshot for base data, augment with aggregated stats
         let base = if !snapshots.is_empty() {
             Self::from_snapshot(&snapshots[0])
@@ -152,6 +398,7 @@ impl NeuralMetrics {
             total_throughput: agg.message_delta,
             node_names: agg.node_names.clone(),
             topic_names: agg.topic_names.clone(),
+            graph,
         }
     }
 
@@ -201,8 +448,11 @@ impl NeuralMetrics {
         use rand::{Rng, SeedableRng};
         let mut rng = rand::rngs::StdRng::seed_from_u64(id);
 
-        let node_count = rng.gen_range(5..50);
-        let connection_count = rng.gen_range(10..200);
+        // Generate adjacency graph first
+        let graph = AdjacencyGraph::sample(id);
+
+        let node_count = graph.nodes.len() as u32;
+        let connection_count = graph.edges.len() as u32;
 
         Self {
             id,
@@ -217,10 +467,9 @@ impl NeuralMetrics {
             warning_ratio: rng.gen_range(0.0..0.3),
             critical_ratio: rng.gen_range(0.0..0.1),
             total_throughput: rng.gen_range(1000..1_000_000),
-            node_names: (0..node_count).map(|i| format!("module_{}", i)).collect(),
-            topic_names: (0..connection_count.min(20))
-                .map(|i| format!("topic_{}", i))
-                .collect(),
+            node_names: graph.nodes.iter().map(|n| n.name.clone()).collect(),
+            topic_names: graph.topics(),
+            graph,
         }
     }
 }
