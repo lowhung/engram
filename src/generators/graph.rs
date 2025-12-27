@@ -16,17 +16,33 @@ use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::f64::consts::PI;
 
-/// A rich blue palette with hue variation for organic feel.
+/// Extended color palette with role-based hue ranges.
+///
+/// The palette extends beyond pure blues to include:
+/// - Cyan/teal for sources (data producers)
+/// - Deep blue for processors (transformers)
+/// - Purple/violet for sinks (data consumers)
+/// - Warm accents (amber/orange) for high-activity elements
 mod palette {
     /// Background color
     pub const BG: &str = "#000000";
 
-    /// Blue hue ranges for different elements (HSL hue values, 190-230 range)
-    pub const HUE_MIN: f64 = 190.0; // Cyan-ish
-    pub const HUE_MAX: f64 = 230.0; // Deep blue
+    /// Base hue ranges by role (HSL hue values)
+    pub const HUE_SOURCE: f64 = 175.0; // Cyan/teal - data flows OUT
+    pub const HUE_PROCESSOR: f64 = 210.0; // Blue - data flows THROUGH
+    pub const HUE_SINK: f64 = 255.0; // Purple/violet - data flows IN
+
+    /// Hue variation allowed within each role
+    pub const HUE_VARIANCE: f64 = 15.0;
+
+    /// Warm accent hue for high activity (amber/orange)
+    pub const HUE_ACCENT: f64 = 35.0;
 
     /// Convert HSL to hex color string
     pub fn hsl_to_hex(h: f64, s: f64, l: f64) -> String {
+        // Normalize hue to 0-360
+        let h = ((h % 360.0) + 360.0) % 360.0;
+
         let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
         let x = c * (1.0 - ((h / 60.0) % 2.0 - 1.0).abs());
         let m = l - c / 2.0;
@@ -52,9 +68,26 @@ mod palette {
         format!("#{:02x}{:02x}{:02x}", r, g, b)
     }
 
-    /// Get a glow color (lighter version of the base)
+    /// Get base hue for a node role
+    pub fn role_hue(role: NodeRole) -> f64 {
+        match role {
+            NodeRole::Source => HUE_SOURCE,
+            NodeRole::Processor => HUE_PROCESSOR,
+            NodeRole::Sink => HUE_SINK,
+        }
+    }
+
+    /// Get a glow color (lighter, desaturated version)
     pub fn glow_color(base_hue: f64) -> String {
-        hsl_to_hex(base_hue, 0.8, 0.85)
+        hsl_to_hex(base_hue, 0.6, 0.85)
+    }
+
+    /// Get an accent color for high-activity elements
+    /// Blends toward warm amber based on intensity (0.0-1.0)
+    pub fn accent_blend(base_hue: f64, intensity: f64) -> f64 {
+        // Blend from base hue toward accent hue based on intensity
+        let blend = intensity.clamp(0.0, 1.0);
+        base_hue * (1.0 - blend * 0.3) + HUE_ACCENT * (blend * 0.3)
     }
 
     /// Role of a node in the graph topology
@@ -255,10 +288,11 @@ impl GraphGenerator {
                 let in_deg = *in_degrees.get(&node.name).unwrap_or(&0);
                 let out_deg = *out_degrees.get(&node.name).unwrap_or(&0);
 
-                // Assign a consistent hue based on name hash but with variation
-                let base_hue = palette::HUE_MIN
-                    + Self::hash_to_float(&node.name) * (palette::HUE_MAX - palette::HUE_MIN);
-                let hue = base_hue + rng.gen_range(-5.0..5.0);
+                // Assign hue based on role with hash-based variation
+                let role_hue = palette::role_hue(role);
+                let hash_offset =
+                    (Self::hash_to_float(&node.name) - 0.5) * palette::HUE_VARIANCE * 2.0;
+                let hue = role_hue + hash_offset + rng.gen_range(-3.0..3.0);
 
                 let cx = self.width as f64 / 2.0;
                 let _cy = self.height as f64 / 2.0;
@@ -301,7 +335,7 @@ impl GraphGenerator {
                     depth,
                     in_degree: in_deg,
                     out_degree: out_deg,
-                    hue: hue.clamp(palette::HUE_MIN, palette::HUE_MAX),
+                    hue,
                 }
             })
             .collect();
@@ -400,10 +434,11 @@ impl GraphGenerator {
                 let in_deg = *in_degrees.get(&node.name).unwrap_or(&0);
                 let out_deg = *out_degrees.get(&node.name).unwrap_or(&0);
 
-                // Hue with slight variation
-                let base_hue = palette::HUE_MIN
-                    + Self::hash_to_float(&node.name) * (palette::HUE_MAX - palette::HUE_MIN);
-                let hue = base_hue + rng.gen_range(-5.0..5.0);
+                // Assign hue based on role with hash-based variation
+                let role_hue = palette::role_hue(role);
+                let hash_offset =
+                    (Self::hash_to_float(&node.name) - 0.5) * palette::HUE_VARIANCE * 2.0;
+                let hue = role_hue + hash_offset + rng.gen_range(-3.0..3.0);
 
                 let angle = (i as f64 / sorted_nodes.len() as f64) * PI * 2.0 - PI / 2.0;
 
@@ -436,7 +471,7 @@ impl GraphGenerator {
                     depth,
                     in_degree: in_deg,
                     out_degree: out_deg,
-                    hue: hue.clamp(palette::HUE_MIN, palette::HUE_MAX),
+                    hue,
                 }
             })
             .collect()
@@ -488,10 +523,11 @@ impl GraphGenerator {
                 let in_deg = *in_degrees.get(&node.name).unwrap_or(&0);
                 let out_deg = *out_degrees.get(&node.name).unwrap_or(&0);
 
-                // Hue with slight variation
-                let base_hue = palette::HUE_MIN
-                    + Self::hash_to_float(&node.name) * (palette::HUE_MAX - palette::HUE_MIN);
-                let hue = base_hue + rng.gen_range(-5.0..5.0);
+                // Assign hue based on role with hash-based variation
+                let role_hue = palette::role_hue(role);
+                let hash_offset =
+                    (Self::hash_to_float(&node.name) - 0.5) * palette::HUE_VARIANCE * 2.0;
+                let hue = role_hue + hash_offset + rng.gen_range(-3.0..3.0);
 
                 let base_x = padding + spacing * (i + 1) as f64;
 
@@ -518,7 +554,7 @@ impl GraphGenerator {
                     depth,
                     in_degree: in_deg,
                     out_degree: out_deg,
-                    hue: hue.clamp(palette::HUE_MIN, palette::HUE_MAX),
+                    hue,
                 });
             }
         }
@@ -593,13 +629,15 @@ impl GraphGenerator {
                 let stroke_width = base_width + (rate_factor * 0.7 + degree_factor * 0.3) * 2.5 * scale;
 
                 // Color with hue variation - blend source and target hues
-                let edge_hue = (src.hue + tgt.hue) / 2.0 + rng.gen_range(-3.0..3.0);
+                // High activity edges shift toward warm accent color
+                let base_edge_hue = (src.hue + tgt.hue) / 2.0 + rng.gen_range(-3.0..3.0);
                 let activity = edge.rate.map(|r| (r / 100.0).min(1.0)).unwrap_or(0.2);
-                let color = palette::hsl_to_hex(
-                    edge_hue.clamp(palette::HUE_MIN, palette::HUE_MAX),
-                    0.5 + activity * 0.3,
-                    0.2 + activity * 0.2,
-                );
+                let edge_hue = palette::accent_blend(base_edge_hue, activity);
+
+                // More dramatic saturation variation based on activity
+                let saturation = 0.4 + activity * 0.5; // 40-90%
+                let lightness = 0.25 + activity * 0.25; // 25-50%
+                let color = palette::hsl_to_hex(edge_hue, saturation, lightness);
 
                 // Opacity based on rate
                 let opacity = if edge.rate.map(|r| r > 20.0).unwrap_or(false) {
@@ -800,11 +838,17 @@ impl GraphGenerator {
         for node in positions {
             let activity = Self::activity_level(node.throughput, node.rate);
 
+            // High activity nodes get warm-shifted hue
+            let node_hue = palette::accent_blend(node.hue, activity * 0.5);
+
             // Core gradient (bright center fading to node color)
-            let center_lightness = 0.7 + activity * 0.2;
-            let edge_lightness = 0.3 + activity * 0.2;
-            let center_color = palette::hsl_to_hex(node.hue, 0.6, center_lightness);
-            let edge_color = palette::hsl_to_hex(node.hue, 0.7 + activity * 0.3, edge_lightness);
+            // More dramatic saturation range based on activity
+            let center_saturation = 0.5 + activity * 0.3;
+            let edge_saturation = 0.6 + activity * 0.35;
+            let center_lightness = 0.65 + activity * 0.2;
+            let edge_lightness = 0.28 + activity * 0.17;
+            let center_color = palette::hsl_to_hex(node_hue, center_saturation, center_lightness);
+            let edge_color = palette::hsl_to_hex(node_hue, edge_saturation, edge_lightness);
 
             defs.push_str(&format!(
                 r#"  <radialGradient id="nodeGrad_{}" cx="30%" cy="30%" r="70%" fx="30%" fy="30%">
