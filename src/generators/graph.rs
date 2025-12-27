@@ -67,25 +67,34 @@ pub mod palette {
         }
 
         /// Create a randomized palette using the seed
-        /// Picks a random background from Catppuccin and a subset of node colors
+        /// Picks a random background and a subset of node colors from all Catppuccin colors
         pub fn random(seed: u64) -> Self {
             use rand::seq::SliceRandom;
             use rand::{Rng, SeedableRng};
             let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
 
-            // All possible backgrounds (mix of light and dark options)
-            let backgrounds = [BASE, MANTLE, CRUST, SURFACE0, SURFACE1, SURFACE2];
-            let background = backgrounds[rng.gen_range(0..backgrounds.len())];
-
-            // All vibrant colors to choose from
+            // All colors that can be used as backgrounds or nodes
             let all_colors = [
+                // Darks/neutrals
+                BASE, MANTLE, CRUST, SURFACE0, SURFACE1, SURFACE2, // Vibrant colors
                 ROSEWATER, FLAMINGO, PINK, MAUVE, RED, MAROON, PEACH, YELLOW, GREEN, TEAL, SKY,
                 SAPPHIRE, BLUE, LAVENDER,
             ];
 
+            // Pick a random background from all colors
+            let background = all_colors[rng.gen_range(0..all_colors.len())];
+
+            // For node colors, pick from colors that contrast with background
+            // Remove the background color from available node colors
+            let available_for_nodes: Vec<&str> = all_colors
+                .iter()
+                .filter(|&&c| c != background)
+                .copied()
+                .collect();
+
             // Pick 3-6 colors randomly
             let color_count = rng.gen_range(3..=6);
-            let mut colors: Vec<&str> = all_colors.to_vec();
+            let mut colors = available_for_nodes;
             colors.shuffle(&mut rng);
             let node_colors: Vec<String> = colors
                 .iter()
@@ -93,10 +102,19 @@ pub mod palette {
                 .map(|s| s.to_string())
                 .collect();
 
+            // Edge color: use a contrasting neutral
+            // If background is dark, use light text; if light/vibrant, use dark
+            let dark_backgrounds = [BASE, MANTLE, CRUST];
+            let edge_color = if dark_backgrounds.contains(&background) {
+                TEXT // Light text on dark
+            } else {
+                CRUST // Dark on light/vibrant
+            };
+
             Self {
                 background: background.to_string(),
                 node_colors,
-                edge_color: TEXT.to_string(),
+                edge_color: edge_color.to_string(),
             }
         }
     }
