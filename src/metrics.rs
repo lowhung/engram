@@ -2,6 +2,11 @@
 //!
 //! Converts neuronic graph snapshots into normalized parameters
 //! that generators use to create unique visual pieces.
+//!
+//! Temporal metrics capture behavioral patterns over time:
+//! - Rate variance: how stable/jittery a node's activity is
+//! - Burst detection: sudden spikes in activity
+//! - Connection stability: how long nodes have been active
 
 use neuronic::{AggregatedMetrics, GraphSnapshot};
 use serde::{Deserialize, Serialize};
@@ -386,6 +391,303 @@ impl AdjacencyGraph {
     }
 }
 
+/// Temporal metrics for a single node across multiple snapshots.
+///
+/// Captures behavioral patterns over time to inform visual properties.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct NodeTemporalMetrics {
+    /// Coefficient of variation in rate (std_dev / mean). Higher = more jittery.
+    /// Range: 0.0 (perfectly stable) to 1.0+ (highly variable)
+    pub rate_variance: f64,
+
+    /// Maximum rate spike relative to mean. Higher = more bursty.
+    /// Range: 1.0 (no bursts) to 10.0+ (extreme bursts)
+    pub burst_intensity: f64,
+
+    /// Whether a burst was detected in recent snapshots.
+    pub has_recent_burst: bool,
+
+    /// Fraction of snapshots where this node was present.
+    /// Range: 0.0 (appeared once) to 1.0 (present in all snapshots)
+    pub presence_ratio: f64,
+
+    /// Whether this node was present in the first snapshot (long-lived).
+    pub is_original: bool,
+
+    /// Whether this node appeared in later snapshots (newcomer).
+    pub is_newcomer: bool,
+
+    /// Average rate across all snapshots.
+    pub avg_rate: f64,
+
+    /// Trend direction: positive = increasing activity, negative = decreasing.
+    /// Range: -1.0 to 1.0
+    pub trend: f64,
+}
+
+/// Temporal metrics for a connection (edge) across multiple snapshots.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct EdgeTemporalMetrics {
+    /// Coefficient of variation in rate. Higher = more variable.
+    pub rate_variance: f64,
+
+    /// Fraction of snapshots where this edge was active.
+    pub stability: f64,
+
+    /// Whether this connection existed from the start.
+    pub is_original: bool,
+}
+
+/// Collection of temporal metrics for the entire graph.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct TemporalMetrics {
+    /// Per-node temporal metrics.
+    pub nodes: HashMap<String, NodeTemporalMetrics>,
+
+    /// Per-edge temporal metrics (key: "source->target").
+    pub edges: HashMap<String, EdgeTemporalMetrics>,
+
+    /// Number of snapshots used to calculate these metrics.
+    pub snapshot_count: usize,
+
+    /// Time span covered in milliseconds.
+    pub time_span_ms: u64,
+}
+
+impl TemporalMetrics {
+    /// Calculate temporal metrics from a series of snapshots.
+    pub fn from_snapshots(snapshots: &[GraphSnapshot]) -> Self {
+        if snapshots.is_empty() {
+            return Self::default();
+        }
+
+        let snapshot_count = snapshots.len();
+        let time_span_ms = if snapshot_count > 1 {
+            snapshots.last().unwrap().timestamp_ms - snapshots.first().unwrap().timestamp_ms
+        } else {
+            0
+        };
+
+        // Collect per-node rate time series
+        let mut node_rates: HashMap<String, Vec<Option<f64>>> = HashMap::new();
+        let mut node_first_seen: HashMap<String, usize> = HashMap::new();
+
+        for (i, snapshot) in snapshots.iter().enumerate() {
+            // Track which nodes are in this snapshot
+            let nodes_in_snapshot: HashSet<String> =
+                snapshot.nodes.iter().map(|n| n.name.clone()).collect();
+
+            for node in &snapshot.nodes {
+                let series = node_rates.entry(node.name.clone()).or_default();
+
+                // Pad with None for snapshots before this node appeared
+                while series.len() < i {
+                    series.push(None);
+                }
+                series.push(node.rate());
+
+                node_first_seen.entry(node.name.clone()).or_insert(i);
+            }
+
+            // For nodes not in this snapshot, record None
+            for (name, series) in node_rates.iter_mut() {
+                if !nodes_in_snapshot.contains(name) && series.len() == i {
+                    series.push(None);
+                }
+            }
+        }
+
+        // Calculate per-node temporal metrics
+        let mut nodes: HashMap<String, NodeTemporalMetrics> = HashMap::new();
+
+        for (name, rates) in &node_rates {
+            let valid_rates: Vec<f64> = rates.iter().filter_map(|r| *r).collect();
+            let presence_count = valid_rates.len();
+
+            if presence_count == 0 {
+                nodes.insert(name.clone(), NodeTemporalMetrics::default());
+                continue;
+            }
+
+            let avg_rate = valid_rates.iter().sum::<f64>() / presence_count as f64;
+            let max_rate = valid_rates.iter().cloned().fold(0.0f64, f64::max);
+
+            // Calculate variance
+            let variance = if presence_count > 1 && avg_rate > 0.0 {
+                let sum_sq: f64 = valid_rates.iter().map(|r| (r - avg_rate).powi(2)).sum();
+                let std_dev = (sum_sq / presence_count as f64).sqrt();
+                (std_dev / avg_rate).min(2.0) // Cap at 2.0
+            } else {
+                0.0
+            };
+
+            // Burst detection: max > 2x average
+            let burst_intensity = if avg_rate > 0.0 {
+                max_rate / avg_rate
+            } else {
+                1.0
+            };
+            let has_recent_burst = if valid_rates.len() >= 2 {
+                // Check if last rate is significantly above average
+                let last_rate = valid_rates.last().unwrap_or(&0.0);
+                *last_rate > avg_rate * 1.5
+            } else {
+                false
+            };
+
+            // Trend calculation: simple linear regression slope sign
+            let trend = if valid_rates.len() >= 3 {
+                let n = valid_rates.len() as f64;
+                let sum_x: f64 = (0..valid_rates.len()).map(|i| i as f64).sum();
+                let sum_y: f64 = valid_rates.iter().sum();
+                let sum_xy: f64 = valid_rates
+                    .iter()
+                    .enumerate()
+                    .map(|(i, r)| i as f64 * r)
+                    .sum();
+                let sum_xx: f64 = (0..valid_rates.len()).map(|i| (i * i) as f64).sum();
+
+                let slope = (n * sum_xy - sum_x * sum_y) / (n * sum_xx - sum_x * sum_x);
+                // Normalize slope to -1..1 range based on average rate
+                if avg_rate > 0.0 {
+                    (slope / avg_rate).clamp(-1.0, 1.0)
+                } else {
+                    0.0
+                }
+            } else {
+                0.0
+            };
+
+            let first_seen = *node_first_seen.get(name).unwrap_or(&0);
+
+            nodes.insert(
+                name.clone(),
+                NodeTemporalMetrics {
+                    rate_variance: variance,
+                    burst_intensity,
+                    has_recent_burst,
+                    presence_ratio: presence_count as f64 / snapshot_count as f64,
+                    is_original: first_seen == 0,
+                    is_newcomer: first_seen > 0 && first_seen >= snapshot_count / 2,
+                    avg_rate,
+                    trend,
+                },
+            );
+        }
+
+        // Calculate per-edge temporal metrics by building adjacency graphs for each snapshot
+        // and tracking which edges appear over time
+        let mut edge_presence: HashMap<String, Vec<bool>> = HashMap::new();
+        let mut edge_rates: HashMap<String, Vec<Option<f64>>> = HashMap::new();
+
+        for (i, snapshot) in snapshots.iter().enumerate() {
+            // Build adjacency graph to get actual source->target edges
+            let adj_graph = AdjacencyGraph::from_snapshot(snapshot);
+
+            let edges_in_snapshot: HashSet<String> = adj_graph
+                .edges
+                .iter()
+                .map(|e| format!("{}:{}", e.source, e.target))
+                .collect();
+
+            for edge in &adj_graph.edges {
+                let key = format!("{}:{}", edge.source, edge.target);
+
+                let presence = edge_presence.entry(key.clone()).or_default();
+                while presence.len() < i {
+                    presence.push(false);
+                }
+                presence.push(true);
+
+                let rates = edge_rates.entry(key).or_default();
+                while rates.len() < i {
+                    rates.push(None);
+                }
+                rates.push(edge.rate);
+            }
+
+            // Mark missing edges
+            for (key, presence) in edge_presence.iter_mut() {
+                if !edges_in_snapshot.contains(key) && presence.len() == i {
+                    presence.push(false);
+                }
+            }
+        }
+
+        let mut edges: HashMap<String, EdgeTemporalMetrics> = HashMap::new();
+
+        for (key, presence) in &edge_presence {
+            let active_count = presence.iter().filter(|&&p| p).count();
+            let stability = active_count as f64 / snapshot_count as f64;
+            let is_original = presence.first().copied().unwrap_or(false);
+
+            let rate_variance = if let Some(rates) = edge_rates.get(key) {
+                let valid_rates: Vec<f64> = rates.iter().filter_map(|r| *r).collect();
+                if valid_rates.len() > 1 {
+                    let avg = valid_rates.iter().sum::<f64>() / valid_rates.len() as f64;
+                    if avg > 0.0 {
+                        let sum_sq: f64 = valid_rates.iter().map(|r| (r - avg).powi(2)).sum();
+                        let std_dev = (sum_sq / valid_rates.len() as f64).sqrt();
+                        (std_dev / avg).min(2.0)
+                    } else {
+                        0.0
+                    }
+                } else {
+                    0.0
+                }
+            } else {
+                0.0
+            };
+
+            edges.insert(
+                key.clone(),
+                EdgeTemporalMetrics {
+                    rate_variance,
+                    stability,
+                    is_original,
+                },
+            );
+        }
+
+        Self {
+            nodes,
+            edges,
+            snapshot_count,
+            time_span_ms,
+        }
+    }
+
+    /// Generate sample temporal metrics for testing.
+    pub fn sample(seed: u64, node_names: &[String]) -> Self {
+        use rand::{Rng, SeedableRng};
+        let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
+
+        let mut nodes = HashMap::new();
+        for name in node_names {
+            nodes.insert(
+                name.clone(),
+                NodeTemporalMetrics {
+                    rate_variance: rng.gen_range(0.0..1.5),
+                    burst_intensity: rng.gen_range(1.0..5.0),
+                    has_recent_burst: rng.gen_bool(0.2),
+                    presence_ratio: rng.gen_range(0.5..1.0),
+                    is_original: rng.gen_bool(0.7),
+                    is_newcomer: rng.gen_bool(0.2),
+                    avg_rate: rng.gen_range(10.0..200.0),
+                    trend: rng.gen_range(-0.5..0.5),
+                },
+            );
+        }
+
+        Self {
+            nodes,
+            edges: HashMap::new(),
+            snapshot_count: 5,
+            time_span_ms: 30000,
+        }
+    }
+}
+
 /// Core metrics captured from neural network activity.
 ///
 /// This can be constructed from live neuronic snapshots or
@@ -422,6 +724,8 @@ pub struct NeuralMetrics {
     pub topic_names: Vec<String>,
     /// The adjacency graph with full topology information.
     pub graph: AdjacencyGraph,
+    /// Temporal metrics from multi-snapshot capture (behavioral patterns over time).
+    pub temporal: TemporalMetrics,
 }
 
 impl NeuralMetrics {
@@ -482,6 +786,8 @@ impl NeuralMetrics {
             node_names: snapshot.nodes.iter().map(|n| n.name.clone()).collect(),
             topic_names: snapshot.edges.iter().map(|e| e.topic.clone()).collect(),
             graph,
+            // Single snapshot has no temporal data
+            temporal: TemporalMetrics::default(),
         }
     }
 
@@ -495,6 +801,9 @@ impl NeuralMetrics {
         } else {
             AdjacencyGraph::sample(0)
         };
+
+        // Calculate temporal metrics from all snapshots
+        let temporal = TemporalMetrics::from_snapshots(snapshots);
 
         // Use first snapshot for base data, augment with aggregated stats
         let base = if !snapshots.is_empty() {
@@ -545,6 +854,7 @@ impl NeuralMetrics {
             node_names: agg.node_names.clone(),
             topic_names: agg.topic_names.clone(),
             graph,
+            temporal,
         }
     }
 
@@ -599,6 +909,10 @@ impl NeuralMetrics {
 
         let node_count = graph.nodes.len() as u32;
         let connection_count = graph.edges.len() as u32;
+        let node_names: Vec<String> = graph.nodes.iter().map(|n| n.name.clone()).collect();
+
+        // Generate sample temporal metrics
+        let temporal = TemporalMetrics::sample(id, &node_names);
 
         Self {
             id,
@@ -613,9 +927,10 @@ impl NeuralMetrics {
             warning_ratio: rng.gen_range(0.0..0.3),
             critical_ratio: rng.gen_range(0.0..0.1),
             total_throughput: rng.gen_range(1000..1_000_000),
-            node_names: graph.nodes.iter().map(|n| n.name.clone()).collect(),
+            node_names,
             topic_names: graph.topics(),
             graph,
+            temporal,
         }
     }
 }

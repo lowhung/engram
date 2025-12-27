@@ -10,7 +10,7 @@
 //! - Randomization adds organic variation while preserving structure
 
 use crate::generators::Generator;
-use crate::metrics::{GraphEdge, GraphNode, NeuralMetrics};
+use crate::metrics::{GraphEdge, GraphNode, NeuralMetrics, NodeTemporalMetrics};
 use rand::{Rng, SeedableRng};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
@@ -149,6 +149,8 @@ struct PositionedNode {
     centrality: f64,
     /// Clustering coefficient (0.0-1.0) - how clique-y the neighborhood
     clustering: f64,
+    /// Temporal metrics from multi-snapshot capture
+    temporal: NodeTemporalMetrics,
 }
 
 impl GraphGenerator {
@@ -297,12 +299,27 @@ impl GraphGenerator {
                 let out_deg = *out_degrees.get(&node.name).unwrap_or(&0);
                 let centrality = *centralities.get(&node.name).unwrap_or(&0.0);
                 let clustering = *clusterings.get(&node.name).unwrap_or(&0.0);
+                let temporal = metrics
+                    .temporal
+                    .nodes
+                    .get(&node.name)
+                    .cloned()
+                    .unwrap_or_default();
 
                 // Assign hue based on role with hash-based variation
+                // Long-lived nodes (is_original) get deeper, richer hues
+                // Newcomers get slightly brighter hues
                 let role_hue = palette::role_hue(role);
                 let hash_offset =
                     (Self::hash_to_float(&node.name) - 0.5) * palette::HUE_VARIANCE * 2.0;
-                let hue = role_hue + hash_offset + rng.gen_range(-3.0..3.0);
+                let age_shift = if temporal.is_original {
+                    -5.0 // Deeper hue for long-lived
+                } else if temporal.is_newcomer {
+                    10.0 // Brighter for newcomers
+                } else {
+                    0.0
+                };
+                let hue = role_hue + hash_offset + age_shift + rng.gen_range(-3.0..3.0);
 
                 let cx = self.width as f64 / 2.0;
                 let cy = self.height as f64 / 2.0;
@@ -324,8 +341,12 @@ impl GraphGenerator {
 
                 // Add jitter for organic feel - more jitter for less connected nodes
                 // High centrality nodes get less jitter (more stable)
+                // High rate_variance nodes get MORE jitter (visually unstable)
                 let connectivity = (in_deg + out_deg) as f64;
-                let jitter_factor = (1.0 / (1.0 + connectivity * 0.2)) * (1.0 - centrality * 0.5);
+                let stability_factor = 1.0 - (temporal.rate_variance / 2.0).min(1.0);
+                let jitter_factor = (1.0 / (1.0 + connectivity * 0.2))
+                    * (1.0 - centrality * 0.5)
+                    * (0.5 + (1.0 - stability_factor) * 0.5);
                 let jitter = 60.0 * scale * jitter_factor;
                 let x = base_x + rng.gen_range(-jitter..jitter);
                 let y = if centrality > 0.1 {
@@ -359,6 +380,7 @@ impl GraphGenerator {
                     hue,
                     centrality,
                     clustering,
+                    temporal,
                 }
             })
             .collect();
@@ -460,12 +482,26 @@ impl GraphGenerator {
                 let out_deg = *out_degrees.get(&node.name).unwrap_or(&0);
                 let centrality = *centralities.get(&node.name).unwrap_or(&0.0);
                 let clustering = *clusterings.get(&node.name).unwrap_or(&0.0);
+                let temporal = metrics
+                    .temporal
+                    .nodes
+                    .get(&node.name)
+                    .cloned()
+                    .unwrap_or_default();
 
                 // Assign hue based on role with hash-based variation
+                // Long-lived nodes get deeper hues, newcomers get brighter
                 let role_hue = palette::role_hue(role);
                 let hash_offset =
                     (Self::hash_to_float(&node.name) - 0.5) * palette::HUE_VARIANCE * 2.0;
-                let hue = role_hue + hash_offset + rng.gen_range(-3.0..3.0);
+                let age_shift = if temporal.is_original {
+                    -5.0
+                } else if temporal.is_newcomer {
+                    10.0
+                } else {
+                    0.0
+                };
+                let hue = role_hue + hash_offset + age_shift + rng.gen_range(-3.0..3.0);
 
                 let angle = (i as f64 / sorted_nodes.len() as f64) * PI * 2.0 - PI / 2.0;
 
@@ -507,6 +543,7 @@ impl GraphGenerator {
                     hue,
                     centrality,
                     clustering,
+                    temporal,
                 }
             })
             .collect()
@@ -578,12 +615,26 @@ impl GraphGenerator {
                 let out_deg = *out_degrees.get(&node.name).unwrap_or(&0);
                 let centrality = *centralities.get(&node.name).unwrap_or(&0.0);
                 let clustering = *clusterings.get(&node.name).unwrap_or(&0.0);
+                let temporal = metrics
+                    .temporal
+                    .nodes
+                    .get(&node.name)
+                    .cloned()
+                    .unwrap_or_default();
 
                 // Assign hue based on role with hash-based variation
+                // Long-lived nodes get deeper hues, newcomers get brighter
                 let role_hue = palette::role_hue(role);
                 let hash_offset =
                     (Self::hash_to_float(&node.name) - 0.5) * palette::HUE_VARIANCE * 2.0;
-                let hue = role_hue + hash_offset + rng.gen_range(-3.0..3.0);
+                let age_shift = if temporal.is_original {
+                    -5.0
+                } else if temporal.is_newcomer {
+                    10.0
+                } else {
+                    0.0
+                };
+                let hue = role_hue + hash_offset + age_shift + rng.gen_range(-3.0..3.0);
 
                 // Position within layer - high centrality nodes get positioned toward center
                 let natural_x = padding + spacing * (i + 1) as f64;
@@ -620,6 +671,7 @@ impl GraphGenerator {
                     hue,
                     centrality,
                     clustering,
+                    temporal,
                 });
             }
         }
@@ -766,6 +818,11 @@ impl GraphGenerator {
     /// Centrality and clustering influence appearance:
     /// - High centrality: Larger glow, more prominent stroke
     /// - High clustering: Subtle secondary ring (interconnected neighborhood)
+    ///
+    /// Temporal metrics influence appearance:
+    /// - Recent bursts: Brighter, more saturated with warm accent
+    /// - High rate variance: Rougher stroke (dashed effect)
+    /// - Long-lived nodes: Richer, deeper colors
     fn draw_nodes(&self, positions: &[PositionedNode], _rng: &mut impl Rng) -> Vec<String> {
         let scale = self.scale();
 
@@ -777,11 +834,20 @@ impl GraphGenerator {
 
                 let mut elements = Vec::new();
 
+                // Temporal-aware burst intensity
+                let burst_factor = if node.temporal.has_recent_burst {
+                    (node.temporal.burst_intensity / 5.0).min(1.0)
+                } else {
+                    0.0
+                };
+
                 // Glow radius varies by connectivity and centrality
                 // High centrality = more prominent glow (hub nodes stand out)
+                // Recent bursts also increase glow
                 let connectivity_factor =
                     1.0 + ((node.in_degree + node.out_degree) as f64 / 15.0).min(0.5);
                 let centrality_glow_boost = 1.0 + node.centrality * 0.5;
+                let burst_glow_boost = 1.0 + burst_factor * 0.3;
 
                 // Outer glow using radial gradient (smooth falloff)
                 let glow_multiplier = match node.role {
@@ -789,15 +855,19 @@ impl GraphGenerator {
                     NodeRole::Sink => 1.8,
                     NodeRole::Processor => 2.0,
                 };
-                let glow_radius =
-                    node.radius * glow_multiplier * connectivity_factor * centrality_glow_boost;
+                let glow_radius = node.radius
+                    * glow_multiplier
+                    * connectivity_factor
+                    * centrality_glow_boost
+                    * burst_glow_boost;
 
-                // Use filter for high-activity or high-centrality nodes
-                let filter_attr = if activity > 0.5 || node.centrality > 0.3 {
-                    r#" filter="url(#intenseGlow)""#
-                } else {
-                    ""
-                };
+                // Use filter for high-activity, high-centrality, or bursting nodes
+                let filter_attr =
+                    if activity > 0.5 || node.centrality > 0.3 || node.temporal.has_recent_burst {
+                        r#" filter="url(#intenseGlow)""#
+                    } else {
+                        ""
+                    };
 
                 elements.push(format!(
                     r#"<circle cx="{:.1}" cy="{:.1}" r="{:.1}" fill="url(#glowGrad_{})"{}/>"#,
@@ -806,25 +876,37 @@ impl GraphGenerator {
 
                 // Core node with radial gradient fill
                 // High centrality nodes get brighter, more saturated strokes
+                // Bursting nodes shift toward warm accent color
                 let centrality_saturation_boost = node.centrality * 0.15;
                 let centrality_lightness_boost = node.centrality * 0.1;
+                let burst_saturation_boost = burst_factor * 0.2;
+                let burst_lightness_boost = burst_factor * 0.15;
+
+                // Shift hue toward warm accent for bursting nodes
+                let effective_hue = if node.temporal.has_recent_burst {
+                    palette::accent_blend(node.hue, burst_factor * 0.5)
+                } else {
+                    node.hue
+                };
+
                 let stroke_color = match node.role {
                     NodeRole::Source => palette::hsl_to_hex(
-                        node.hue - 5.0,
-                        0.8 + centrality_saturation_boost,
-                        0.7 + centrality_lightness_boost,
+                        effective_hue - 5.0,
+                        (0.8 + centrality_saturation_boost + burst_saturation_boost).min(1.0),
+                        (0.7 + centrality_lightness_boost + burst_lightness_boost).min(0.95),
                     ),
                     NodeRole::Sink => palette::hsl_to_hex(
-                        node.hue + 5.0,
-                        0.7 + centrality_saturation_boost,
-                        0.6 + centrality_lightness_boost,
+                        effective_hue + 5.0,
+                        (0.7 + centrality_saturation_boost + burst_saturation_boost).min(1.0),
+                        (0.6 + centrality_lightness_boost + burst_lightness_boost).min(0.9),
                     ),
                     NodeRole::Processor => palette::hsl_to_hex(
-                        node.hue,
-                        0.75 + centrality_saturation_boost,
-                        0.65 + centrality_lightness_boost,
+                        effective_hue,
+                        (0.75 + centrality_saturation_boost + burst_saturation_boost).min(1.0),
+                        (0.65 + centrality_lightness_boost + burst_lightness_boost).min(0.9),
                     ),
                 };
+
                 // High centrality = thicker stroke (more prominent)
                 let centrality_stroke_boost = node.centrality * 0.5;
                 let stroke_width = match node.role {
@@ -832,24 +914,36 @@ impl GraphGenerator {
                     NodeRole::Sink => (1.0 + centrality_stroke_boost) * scale,
                     NodeRole::Processor => (1.5 + centrality_stroke_boost) * scale,
                 };
+
+                // High rate variance = dashed stroke (visual instability)
+                let stroke_dasharray = if node.temporal.rate_variance > 0.5 {
+                    let dash_len = 4.0 * scale * (1.0 - node.temporal.rate_variance.min(1.5) / 2.0);
+                    let gap_len = 2.0 * scale * node.temporal.rate_variance.min(1.5);
+                    format!(r#" stroke-dasharray="{:.1} {:.1}""#, dash_len, gap_len)
+                } else {
+                    String::new()
+                };
+
                 elements.push(format!(
-                    r#"<circle cx="{:.1}" cy="{:.1}" r="{:.1}" fill="url(#nodeGrad_{})" stroke="{}" stroke-width="{:.1}" filter="url(#softGlow)"/>"#,
-                    node.x, node.y, node.radius, node_id, stroke_color, stroke_width
+                    r#"<circle cx="{:.1}" cy="{:.1}" r="{:.1}" fill="url(#nodeGrad_{})" stroke="{}" stroke-width="{:.1}" filter="url(#softGlow)"{}/>"#,
+                    node.x, node.y, node.radius, node_id, stroke_color, stroke_width, stroke_dasharray
                 ));
 
                 // Bright center highlight - gives that "lit from within" look
                 // High centrality nodes have slightly larger, brighter centers
-                let center_radius =
-                    node.radius * (0.25 + activity * 0.15 + node.centrality * 0.1);
-                let glow_color = palette::glow_color(node.hue);
-                let center_opacity = 0.5 + activity * 0.4 + node.centrality * 0.1;
+                // Bursting nodes have extra bright centers
+                let center_radius = node.radius
+                    * (0.25 + activity * 0.15 + node.centrality * 0.1 + burst_factor * 0.1);
+                let glow_color = palette::glow_color(effective_hue);
+                let center_opacity =
+                    (0.5 + activity * 0.4 + node.centrality * 0.1 + burst_factor * 0.2).min(1.0);
                 elements.push(format!(
                     r#"<circle cx="{:.1}" cy="{:.1}" r="{:.1}" fill="{}" opacity="{:.2}"/>"#,
                     node.x - node.radius * 0.2,
                     node.y - node.radius * 0.2,
                     center_radius,
                     glow_color,
-                    center_opacity.min(1.0)
+                    center_opacity
                 ));
 
                 // Sources get an additional outer ring to show they're emitters
@@ -878,6 +972,22 @@ impl GraphGenerator {
                         cluster_opacity,
                         3.0 * scale,
                         3.0 * scale
+                    ));
+                }
+
+                // Recent burst indicator - pulsing outer ring with warm color
+                if node.temporal.has_recent_burst {
+                    let burst_ring_radius = node.radius * 1.6;
+                    let burst_color = palette::hsl_to_hex(palette::HUE_ACCENT, 0.9, 0.6);
+                    let burst_opacity = 0.3 + burst_factor * 0.3;
+                    elements.push(format!(
+                        r#"<circle cx="{:.1}" cy="{:.1}" r="{:.1}" fill="none" stroke="{}" stroke-width="{:.1}" opacity="{:.2}" filter="url(#softGlow)"/>"#,
+                        node.x,
+                        node.y,
+                        burst_ring_radius,
+                        burst_color,
+                        2.0 * scale,
+                        burst_opacity
                     ));
                 }
 
