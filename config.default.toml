@@ -9,7 +9,7 @@ exchange = "caryatid"
 # Snapshot capture settings
 [capture]
 topic = "caryatid.monitor.snapshot"
-count = 1
+count = 5
 interval = 3
 timeout = 180
 

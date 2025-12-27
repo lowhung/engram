@@ -147,6 +147,8 @@ pub struct GraphGenerator {
     pub height: u32,
     pub style: GraphStyle,
     pub palette: ColorPalette,
+    /// Maximum nodes to display (downsamples larger graphs)
+    pub max_nodes: Option<usize>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -166,6 +168,7 @@ impl Default for GraphGenerator {
             height: 2048,
             style: GraphStyle::Organic,
             palette: ColorPalette::default(),
+            max_nodes: Some(12),
         }
     }
 }
@@ -210,11 +213,17 @@ impl GraphGenerator {
             height,
             style,
             palette: ColorPalette::default(),
+            max_nodes: Some(12), // Default to sparse samples
         }
     }
 
     pub fn with_palette(mut self, palette: ColorPalette) -> Self {
         self.palette = palette;
+        self
+    }
+
+    pub fn with_max_nodes(mut self, max_nodes: Option<usize>) -> Self {
+        self.max_nodes = max_nodes;
         self
     }
 
@@ -911,10 +920,27 @@ impl Generator for GraphGenerator {
         let seed_u64 = u64::from_le_bytes(seed[0..8].try_into().unwrap());
         let mut rng = rand::rngs::StdRng::seed_from_u64(seed_u64);
 
+        // Downsample the graph if needed
+        let metrics = if let Some(max) = self.max_nodes {
+            if metrics.graph.nodes.len() > max {
+                let downsampled_graph = metrics.graph.downsample(max, seed_u64);
+                NeuralMetrics {
+                    graph: downsampled_graph,
+                    node_count: max as u32,
+                    connection_count: metrics.connection_count, // Will be recalculated implicitly
+                    ..metrics.clone()
+                }
+            } else {
+                metrics.clone()
+            }
+        } else {
+            metrics.clone()
+        };
+
         match self.style {
-            GraphStyle::Organic => self.generate_organic(metrics, &mut rng),
-            GraphStyle::Circular => self.generate_circular(metrics, &mut rng),
-            GraphStyle::Hierarchical => self.generate_hierarchical(metrics, &mut rng),
+            GraphStyle::Organic => self.generate_organic(&metrics, &mut rng),
+            GraphStyle::Circular => self.generate_circular(&metrics, &mut rng),
+            GraphStyle::Hierarchical => self.generate_hierarchical(&metrics, &mut rng),
         }
     }
 

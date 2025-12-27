@@ -75,7 +75,7 @@ enum Commands {
         #[arg(short, long)]
         topic: Option<String>,
 
-        /// Number of snapshots to capture
+        /// Number of snapshots per batch (used to aggregate metrics before generating)
         #[arg(short, long)]
         count: Option<usize>,
 
@@ -83,11 +83,11 @@ enum Commands {
         #[arg(short, long)]
         interval: Option<u64>,
 
-        /// Generator style
+        /// Generator style (in continuous mode, styles rotate automatically)
         #[arg(short, long, value_enum, default_value = "organic")]
         style: GraphStyleArg,
 
-        /// Output file path
+        /// Output file path (for single capture) or ignored in continuous mode
         #[arg(short, long)]
         output: Option<PathBuf>,
 
@@ -102,6 +102,14 @@ enum Commands {
         /// Also save metrics as JSON
         #[arg(long)]
         save_metrics: bool,
+
+        /// Keep running and generating images continuously
+        #[arg(long)]
+        continuous: bool,
+
+        /// Directory to save generated images (required for continuous mode)
+        #[arg(long)]
+        output_dir: Option<PathBuf>,
     },
 
     /// Generate all styles for comparison
@@ -241,6 +249,8 @@ async fn main() -> Result<()> {
             width,
             height,
             save_metrics,
+            continuous,
+            output_dir,
         } => {
             let rabbitmq_url = rabbitmq_url.unwrap_or_else(|| config.rabbitmq.url.clone());
             let exchange = exchange.unwrap_or_else(|| config.rabbitmq.exchange.clone());
@@ -251,63 +261,162 @@ async fn main() -> Result<()> {
             let height = height.unwrap_or(config.output.height);
             let save_metrics = save_metrics || config.output.save_metrics;
 
-            println!("Connecting to RabbitMQ at {}...", rabbitmq_url);
-            println!("Subscribing to topic: {}", topic);
-            println!(
-                "Capturing {} snapshots at {}s intervals...",
-                count, interval
-            );
-
             let subscriber_config = SubscriberConfig {
-                url: rabbitmq_url,
-                exchange,
+                url: rabbitmq_url.clone(),
+                exchange: exchange.clone(),
             };
 
-            let capture_config = CaptureConfig {
-                count,
-                interval: Duration::from_secs(interval),
-                timeout: Duration::from_secs(config.capture.timeout),
-                ..Default::default()
-            };
+            if continuous {
+                // Continuous mode: keep generating images with varying seeds and styles
+                let out_dir = output_dir
+                    .unwrap_or_else(|| PathBuf::from(&config.output.directory).join("continuous"));
+                fs::create_dir_all(&out_dir)?;
 
-            let snapshots = capture_snapshots(&subscriber_config, &topic, &capture_config).await?;
+                println!("Continuous capture mode");
+                println!("  RabbitMQ: {}", rabbitmq_url);
+                println!("  Topic: {}", topic);
+                println!("  Snapshots per image: {}", count);
+                println!("  Interval: {}s between snapshots", interval);
+                println!("  Output: {}", out_dir.display());
+                println!();
 
-            println!("Captured {} snapshots", snapshots.len());
+                let capture_config = CaptureConfig {
+                    count,
+                    interval: Duration::from_secs(interval),
+                    timeout: Duration::from_secs(config.capture.timeout),
+                    ..Default::default()
+                };
 
-            let aggregated = AggregatedMetrics::from_snapshots(&snapshots);
-            let metrics = NeuralMetrics::from_aggregated(&aggregated, &snapshots);
+                let styles = GraphStyleArg::all();
+                let mut image_count = 0u64;
 
-            println!("\nTopology:");
-            println!("  Nodes: {}", metrics.graph.nodes.len());
-            println!("  Edges: {}", metrics.graph.edges.len());
-            println!("  Topics: {}", metrics.graph.topics().len());
-            println!("\nActivity:");
-            println!("  Rate: {:.1} msg/s", metrics.synapse_rate);
-            println!("  Throughput: {} messages", metrics.total_throughput);
+                loop {
+                    // Capture a batch of snapshots
+                    print!("Capturing batch {}... ", image_count + 1);
+                    let snapshots = match capture_snapshots(
+                        &subscriber_config,
+                        &topic,
+                        &capture_config,
+                    )
+                    .await
+                    {
+                        Ok(s) => s,
+                        Err(e) => {
+                            println!("Error: {}", e);
+                            println!("Retrying in 5 seconds...");
+                            tokio::time::sleep(Duration::from_secs(5)).await;
+                            continue;
+                        }
+                    };
 
-            let gen = GraphGenerator::new(width, height, style.to_style());
-            println!("\nGenerating {} visualization...", style.name());
-            let result = gen.generate(&metrics);
+                    if snapshots.is_empty() {
+                        println!("No snapshots received, retrying...");
+                        tokio::time::sleep(Duration::from_secs(2)).await;
+                        continue;
+                    }
 
-            let output_dir = PathBuf::from(&config.output.directory);
-            fs::create_dir_all(&output_dir)?;
+                    println!("{} snapshots", snapshots.len());
 
-            let timestamp = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_secs();
+                    // Generate metrics
+                    let aggregated = AggregatedMetrics::from_snapshots(&snapshots);
+                    let metrics = NeuralMetrics::from_aggregated(&aggregated, &snapshots);
 
-            let output_path =
-                output.unwrap_or_else(|| output_dir.join(format!("engram_live_{}.svg", timestamp)));
+                    // Automatically rotate through styles
+                    let current_style = &styles[image_count as usize % styles.len()];
 
-            fs::write(&output_path, &result)?;
-            println!("Saved to {}", output_path.display());
+                    // Random seed for each image
+                    let seed: u64 = rand::random();
 
-            if save_metrics {
-                let metrics_path = output_path.with_extension("json");
-                let metrics_json = serde_json::to_string_pretty(&metrics)?;
-                fs::write(&metrics_path, metrics_json)?;
-                println!("Saved metrics to {}", metrics_path.display());
+                    // Generate image
+                    let palette = ColorPalette::random(seed);
+                    let gen = GraphGenerator::new(width, height, current_style.to_style())
+                        .with_palette(palette);
+                    let result = gen.generate(&metrics);
+
+                    // Save image
+                    let timestamp = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap()
+                        .as_millis();
+                    let filename = format!("engram_{}_{}.svg", image_count, timestamp);
+                    let path = out_dir.join(&filename);
+                    fs::write(&path, &result)?;
+
+                    println!(
+                        "  Generated: {} [{}] ({} nodes, {} edges)",
+                        filename,
+                        current_style.name(),
+                        metrics.graph.nodes.len(),
+                        metrics.graph.edges.len()
+                    );
+
+                    if save_metrics {
+                        let metrics_path = path.with_extension("json");
+                        let metrics_json = serde_json::to_string_pretty(&metrics)?;
+                        fs::write(&metrics_path, metrics_json)?;
+                    }
+
+                    image_count += 1;
+                }
+            } else {
+                // Single capture mode (original behavior)
+                println!("Connecting to RabbitMQ at {}...", rabbitmq_url);
+                println!("Subscribing to topic: {}", topic);
+                println!(
+                    "Capturing {} snapshots at {}s intervals...",
+                    count, interval
+                );
+
+                let capture_config = CaptureConfig {
+                    count,
+                    interval: Duration::from_secs(interval),
+                    timeout: Duration::from_secs(config.capture.timeout),
+                    ..Default::default()
+                };
+
+                let snapshots =
+                    capture_snapshots(&subscriber_config, &topic, &capture_config).await?;
+
+                println!("Captured {} snapshots", snapshots.len());
+
+                let aggregated = AggregatedMetrics::from_snapshots(&snapshots);
+                let metrics = NeuralMetrics::from_aggregated(&aggregated, &snapshots);
+
+                println!("\nTopology:");
+                println!("  Nodes: {}", metrics.graph.nodes.len());
+                println!("  Edges: {}", metrics.graph.edges.len());
+                println!("  Topics: {}", metrics.graph.topics().len());
+                println!("\nActivity:");
+                println!("  Rate: {:.1} msg/s", metrics.synapse_rate);
+                println!("  Throughput: {} messages", metrics.total_throughput);
+
+                let seed: u64 = rand::random();
+                let palette = ColorPalette::random(seed);
+                let gen =
+                    GraphGenerator::new(width, height, style.to_style()).with_palette(palette);
+                println!("\nGenerating {} visualization...", style.name());
+                let result = gen.generate(&metrics);
+
+                let out_dir = output_dir.unwrap_or_else(|| PathBuf::from(&config.output.directory));
+                fs::create_dir_all(&out_dir)?;
+
+                let timestamp = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs();
+
+                let output_path = output
+                    .unwrap_or_else(|| out_dir.join(format!("engram_live_{}.svg", timestamp)));
+
+                fs::write(&output_path, &result)?;
+                println!("Saved to {}", output_path.display());
+
+                if save_metrics {
+                    let metrics_path = output_path.with_extension("json");
+                    let metrics_json = serde_json::to_string_pretty(&metrics)?;
+                    fs::write(&metrics_path, metrics_json)?;
+                    println!("Saved metrics to {}", metrics_path.display());
+                }
             }
         }
 

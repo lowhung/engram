@@ -447,6 +447,84 @@ impl AdjacencyGraph {
         coefficients
     }
 
+    /// Downsample the graph to a target number of nodes.
+    ///
+    /// Selects a random subset of nodes while preserving edges between
+    /// the selected nodes. This creates representative samples of larger topologies.
+    pub fn downsample(&self, target_nodes: usize, seed: u64) -> Self {
+        use rand::seq::SliceRandom;
+        use rand::SeedableRng;
+
+        if self.nodes.len() <= target_nodes {
+            return self.clone();
+        }
+
+        let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
+
+        // Randomly select nodes to keep
+        let mut node_indices: Vec<usize> = (0..self.nodes.len()).collect();
+        node_indices.shuffle(&mut rng);
+        node_indices.truncate(target_nodes);
+
+        let kept_names: std::collections::HashSet<&str> = node_indices
+            .iter()
+            .map(|&i| self.nodes[i].name.as_str())
+            .collect();
+
+        // Filter nodes
+        let nodes: Vec<GraphNode> = node_indices
+            .iter()
+            .map(|&i| {
+                let node = &self.nodes[i];
+                // Filter reads/writes to only include topics that still have
+                // at least one other endpoint in our kept set
+                GraphNode {
+                    name: node.name.clone(),
+                    reads: node.reads.clone(),
+                    writes: node.writes.clone(),
+                    rate: node.rate,
+                    throughput: node.throughput,
+                }
+            })
+            .collect();
+
+        // Filter edges to only those between kept nodes
+        let edges: Vec<GraphEdge> = self
+            .edges
+            .iter()
+            .filter(|e| {
+                kept_names.contains(e.source.as_str()) && kept_names.contains(e.target.as_str())
+            })
+            .cloned()
+            .collect();
+
+        // Rebuild producer/consumer maps
+        let mut producers: HashMap<String, Vec<String>> = HashMap::new();
+        let mut consumers: HashMap<String, Vec<String>> = HashMap::new();
+
+        for node in &nodes {
+            for topic in &node.writes {
+                producers
+                    .entry(topic.clone())
+                    .or_default()
+                    .push(node.name.clone());
+            }
+            for topic in &node.reads {
+                consumers
+                    .entry(topic.clone())
+                    .or_default()
+                    .push(node.name.clone());
+            }
+        }
+
+        Self {
+            nodes,
+            edges,
+            producers,
+            consumers,
+        }
+    }
+
     /// Generate sample adjacency graph for testing.
     ///
     /// Creates a sparse graph more closely resembling real distributed systems
