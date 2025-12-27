@@ -869,6 +869,64 @@ impl GraphGenerator {
             .collect()
     }
 
+    /// Normalize node positions to fill the canvas.
+    ///
+    /// Calculates bounding box and scales/translates all nodes to use
+    /// the full canvas with a consistent margin.
+    fn normalize_positions(&self, mut positions: Vec<PositionedNode>) -> Vec<PositionedNode> {
+        if positions.is_empty() {
+            return positions;
+        }
+
+        let scale = self.scale();
+        let margin = 80.0 * scale;
+
+        // Find bounding box (accounting for node radii)
+        let mut min_x = f64::MAX;
+        let mut max_x = f64::MIN;
+        let mut min_y = f64::MAX;
+        let mut max_y = f64::MIN;
+
+        for node in &positions {
+            min_x = min_x.min(node.x - node.radius);
+            max_x = max_x.max(node.x + node.radius);
+            min_y = min_y.min(node.y - node.radius);
+            max_y = max_y.max(node.y + node.radius);
+        }
+
+        let content_width = max_x - min_x;
+        let content_height = max_y - min_y;
+
+        if content_width <= 0.0 || content_height <= 0.0 {
+            return positions;
+        }
+
+        // Available space
+        let available_width = self.width as f64 - margin * 2.0;
+        let available_height = self.height as f64 - margin * 2.0;
+
+        // Scale factor to fit content in available space (maintain aspect ratio)
+        let scale_x = available_width / content_width;
+        let scale_y = available_height / content_height;
+        let fit_scale = scale_x.min(scale_y);
+
+        // Center of content and center of canvas
+        let content_cx = (min_x + max_x) / 2.0;
+        let content_cy = (min_y + max_y) / 2.0;
+        let canvas_cx = self.width as f64 / 2.0;
+        let canvas_cy = self.height as f64 / 2.0;
+
+        // Transform all positions
+        for node in &mut positions {
+            // Scale around content center, then translate to canvas center
+            node.x = (node.x - content_cx) * fit_scale + canvas_cx;
+            node.y = (node.y - content_cy) * fit_scale + canvas_cy;
+            node.radius *= fit_scale;
+        }
+
+        positions
+    }
+
     /// Draw nodes as solid circles or concentric rings.
     ///
     /// No gradients, no glow - just bold solid shapes.
@@ -909,6 +967,7 @@ impl GraphGenerator {
     /// Generate organic style graph.
     fn generate_organic(&self, metrics: &NeuralMetrics, rng: &mut impl Rng) -> String {
         let positions = self.position_nodes_organic(metrics, rng);
+        let positions = self.normalize_positions(positions);
         let edges = self.draw_edges(&positions, &metrics.graph.edges, rng);
         let nodes = self.draw_nodes(&positions);
 
@@ -918,6 +977,7 @@ impl GraphGenerator {
     /// Generate circular style graph.
     fn generate_circular(&self, metrics: &NeuralMetrics, rng: &mut impl Rng) -> String {
         let positions = self.position_nodes_circular(metrics, rng);
+        let positions = self.normalize_positions(positions);
         let edges = self.draw_edges(&positions, &metrics.graph.edges, rng);
         let nodes = self.draw_nodes(&positions);
 
@@ -927,6 +987,7 @@ impl GraphGenerator {
     /// Generate hierarchical style graph.
     fn generate_hierarchical(&self, metrics: &NeuralMetrics, rng: &mut impl Rng) -> String {
         let positions = self.position_nodes_hierarchical(metrics, rng);
+        let positions = self.normalize_positions(positions);
         let edges = self.draw_edges(&positions, &metrics.graph.edges, rng);
         let nodes = self.draw_nodes(&positions);
 
@@ -1027,6 +1088,7 @@ impl GraphGenerator {
     /// Generate grid style graph.
     fn generate_grid(&self, metrics: &NeuralMetrics, rng: &mut impl Rng) -> String {
         let positions = self.position_nodes_grid(metrics, rng);
+        let positions = self.normalize_positions(positions);
         let edges = self.draw_edges(&positions, &metrics.graph.edges, rng);
         let nodes = self.draw_nodes(&positions);
         self.wrap_svg(&format!("{}\n{}", edges.join("\n"), nodes.join("\n")))
@@ -1124,6 +1186,7 @@ impl GraphGenerator {
     /// Generate spiral style graph.
     fn generate_spiral(&self, metrics: &NeuralMetrics, rng: &mut impl Rng) -> String {
         let positions = self.position_nodes_spiral(metrics, rng);
+        let positions = self.normalize_positions(positions);
         let edges = self.draw_edges(&positions, &metrics.graph.edges, rng);
         let nodes = self.draw_nodes(&positions);
         self.wrap_svg(&format!("{}\n{}", edges.join("\n"), nodes.join("\n")))
@@ -1229,6 +1292,7 @@ impl GraphGenerator {
     /// Generate radial style graph.
     fn generate_radial(&self, metrics: &NeuralMetrics, rng: &mut impl Rng) -> String {
         let positions = self.position_nodes_radial(metrics, rng);
+        let positions = self.normalize_positions(positions);
         let edges = self.draw_edges(&positions, &metrics.graph.edges, rng);
         let nodes = self.draw_nodes(&positions);
         self.wrap_svg(&format!("{}\n{}", edges.join("\n"), nodes.join("\n")))
@@ -1333,6 +1397,7 @@ impl GraphGenerator {
     /// Generate clustered style graph.
     fn generate_clustered(&self, metrics: &NeuralMetrics, rng: &mut impl Rng) -> String {
         let positions = self.position_nodes_clustered(metrics, rng);
+        let positions = self.normalize_positions(positions);
         let edges = self.draw_edges(&positions, &metrics.graph.edges, rng);
         let nodes = self.draw_nodes(&positions);
         self.wrap_svg(&format!("{}\n{}", edges.join("\n"), nodes.join("\n")))
@@ -1416,6 +1481,7 @@ impl GraphGenerator {
     /// Generate scatter style graph.
     fn generate_scatter(&self, metrics: &NeuralMetrics, rng: &mut impl Rng) -> String {
         let positions = self.position_nodes_scatter(metrics, rng);
+        let positions = self.normalize_positions(positions);
         let edges = self.draw_edges(&positions, &metrics.graph.edges, rng);
         let nodes = self.draw_nodes(&positions);
         self.wrap_svg(&format!("{}\n{}", edges.join("\n"), nodes.join("\n")))
@@ -1653,6 +1719,7 @@ impl GraphGenerator {
     /// Generate matrix style graph with obstacle-avoiding edges.
     fn generate_matrix(&self, metrics: &NeuralMetrics, rng: &mut impl Rng) -> String {
         let positions = self.position_nodes_matrix(metrics, rng);
+        let positions = self.normalize_positions(positions);
         let edges = self.draw_edges_avoiding_nodes(&positions, &metrics.graph.edges, rng);
         let nodes = self.draw_nodes(&positions);
         self.wrap_svg(&format!("{}\n{}", edges.join("\n"), nodes.join("\n")))
