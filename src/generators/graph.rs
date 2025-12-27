@@ -145,6 +145,10 @@ struct PositionedNode {
     out_degree: usize,
     /// Assigned hue for consistent coloring
     hue: f64,
+    /// Betweenness centrality (0.0-1.0) - how much of a bridge/hub
+    centrality: f64,
+    /// Clustering coefficient (0.0-1.0) - how clique-y the neighborhood
+    clustering: f64,
 }
 
 impl GraphGenerator {
@@ -278,6 +282,10 @@ impl GraphGenerator {
         let (in_degrees, out_degrees) = Self::calculate_degrees(&graph.nodes, &graph.edges);
         let max_depth = depths.values().copied().max().unwrap_or(1).max(1);
 
+        // Calculate centrality metrics
+        let centralities = graph.betweenness_centrality();
+        let clusterings = graph.clustering_coefficients();
+
         // Initial positions based on topology + randomness
         let mut positions: Vec<PositionedNode> = graph
             .nodes
@@ -287,6 +295,8 @@ impl GraphGenerator {
                 let depth = *depths.get(&node.name).unwrap_or(&0);
                 let in_deg = *in_degrees.get(&node.name).unwrap_or(&0);
                 let out_deg = *out_degrees.get(&node.name).unwrap_or(&0);
+                let centrality = *centralities.get(&node.name).unwrap_or(&0.0);
+                let clustering = *clusterings.get(&node.name).unwrap_or(&0.0);
 
                 // Assign hue based on role with hash-based variation
                 let role_hue = palette::role_hue(role);
@@ -295,34 +305,45 @@ impl GraphGenerator {
                 let hue = role_hue + hash_offset + rng.gen_range(-3.0..3.0);
 
                 let cx = self.width as f64 / 2.0;
-                let _cy = self.height as f64 / 2.0;
+                let cy = self.height as f64 / 2.0;
 
                 // Y position influenced by depth (sources higher, sinks lower)
                 let depth_ratio = depth as f64 / max_depth as f64;
                 let base_y = padding + depth_ratio * h * 0.7;
 
                 // X position based on hash but clustered by role
+                // High centrality nodes pulled toward center
                 let hash = Self::hash_to_float(&node.name);
                 let role_offset = match role {
                     NodeRole::Source => -0.2,
                     NodeRole::Sink => 0.2,
                     NodeRole::Processor => 0.0,
                 };
-                let base_x = cx + (hash - 0.5 + role_offset) * w * 0.6;
+                let center_pull = centrality * 0.3; // High centrality = more central
+                let base_x = cx + (hash - 0.5 + role_offset) * w * 0.6 * (1.0 - center_pull);
 
                 // Add jitter for organic feel - more jitter for less connected nodes
+                // High centrality nodes get less jitter (more stable)
                 let connectivity = (in_deg + out_deg) as f64;
-                let jitter_factor = 1.0 / (1.0 + connectivity * 0.2);
+                let jitter_factor = (1.0 / (1.0 + connectivity * 0.2)) * (1.0 - centrality * 0.5);
                 let jitter = 60.0 * scale * jitter_factor;
                 let x = base_x + rng.gen_range(-jitter..jitter);
-                let y = base_y + rng.gen_range(-jitter..jitter);
+                let y = if centrality > 0.1 {
+                    // High centrality nodes also pulled toward vertical center
+                    base_y * (1.0 - centrality * 0.2) + cy * centrality * 0.2
+                } else {
+                    base_y
+                } + rng.gen_range(-jitter..jitter);
 
-                // Node size based on throughput and connectivity
+                // Node size based on throughput, connectivity, and centrality
                 let base_radius = 14.0 * scale;
                 let throughput_factor = (node.throughput as f64).log10().max(1.0) / 6.0;
                 let degree_factor = (connectivity / 10.0).min(1.0);
-                let radius =
-                    base_radius + (throughput_factor * 0.7 + degree_factor * 0.3) * 26.0 * scale;
+                let centrality_factor = centrality * 2.0; // Centrality boosts size
+                let radius = base_radius
+                    + (throughput_factor * 0.5 + degree_factor * 0.25 + centrality_factor * 0.25)
+                        * 28.0
+                        * scale;
 
                 PositionedNode {
                     name: node.name.clone(),
@@ -336,6 +357,8 @@ impl GraphGenerator {
                     in_degree: in_deg,
                     out_degree: out_deg,
                     hue,
+                    centrality,
+                    clustering,
                 }
             })
             .collect();
@@ -420,6 +443,8 @@ impl GraphGenerator {
         // Calculate topology
         let depths = Self::calculate_depths(&graph.nodes, &graph.edges);
         let (in_degrees, out_degrees) = Self::calculate_degrees(&graph.nodes, &graph.edges);
+        let centralities = graph.betweenness_centrality();
+        let clusterings = graph.clustering_coefficients();
 
         // Sort nodes by depth for better visual flow around the circle
         let mut sorted_nodes: Vec<_> = graph.nodes.iter().collect();
@@ -433,6 +458,8 @@ impl GraphGenerator {
                 let depth = *depths.get(&node.name).unwrap_or(&0);
                 let in_deg = *in_degrees.get(&node.name).unwrap_or(&0);
                 let out_deg = *out_degrees.get(&node.name).unwrap_or(&0);
+                let centrality = *centralities.get(&node.name).unwrap_or(&0.0);
+                let clustering = *clusterings.get(&node.name).unwrap_or(&0.0);
 
                 // Assign hue based on role with hash-based variation
                 let role_hue = palette::role_hue(role);
@@ -443,12 +470,15 @@ impl GraphGenerator {
                 let angle = (i as f64 / sorted_nodes.len() as f64) * PI * 2.0 - PI / 2.0;
 
                 // Vary radius slightly based on role - sources slightly outside, sinks inside
+                // High centrality nodes pulled toward center
                 let radius_offset = match role {
                     NodeRole::Source => 20.0 * scale,
                     NodeRole::Sink => -20.0 * scale,
                     NodeRole::Processor => 0.0,
                 };
-                let node_orbit = radius + radius_offset + rng.gen_range(-10.0..10.0) * scale;
+                let centrality_pull = centrality * 40.0 * scale;
+                let node_orbit =
+                    radius + radius_offset - centrality_pull + rng.gen_range(-10.0..10.0) * scale;
 
                 let x = cx + angle.cos() * node_orbit;
                 let y = cy + angle.sin() * node_orbit;
@@ -457,8 +487,11 @@ impl GraphGenerator {
                 let throughput_factor = (node.throughput as f64).log10().max(1.0) / 6.0;
                 let connectivity = (in_deg + out_deg) as f64;
                 let degree_factor = (connectivity / 10.0).min(1.0);
-                let node_radius =
-                    base_radius + (throughput_factor * 0.7 + degree_factor * 0.3) * 22.0 * scale;
+                let centrality_factor = centrality * 2.0;
+                let node_radius = base_radius
+                    + (throughput_factor * 0.5 + degree_factor * 0.25 + centrality_factor * 0.25)
+                        * 24.0
+                        * scale;
 
                 PositionedNode {
                     name: node.name.clone(),
@@ -472,12 +505,19 @@ impl GraphGenerator {
                     in_degree: in_deg,
                     out_degree: out_deg,
                     hue,
+                    centrality,
+                    clustering,
                 }
             })
             .collect()
     }
 
     /// Position nodes in hierarchical layers based on actual graph depth.
+    ///
+    /// Uses graph topology for layered positioning:
+    /// - Nodes grouped by depth (distance from sources)
+    /// - High centrality nodes positioned more centrally within their layer
+    /// - Node sizes influenced by centrality and clustering
     fn position_nodes_hierarchical(
         &self,
         metrics: &NeuralMetrics,
@@ -490,6 +530,10 @@ impl GraphGenerator {
         let depths = Self::calculate_depths(&graph.nodes, &graph.edges);
         let (in_degrees, out_degrees) = Self::calculate_degrees(&graph.nodes, &graph.edges);
         let max_depth = depths.values().copied().max().unwrap_or(0);
+
+        // Calculate centrality metrics
+        let centralities = graph.betweenness_centrality();
+        let clusterings = graph.clustering_coefficients();
 
         // Group nodes by depth
         let mut layers: Vec<Vec<&GraphNode>> = vec![vec![]; (max_depth + 1) as usize];
@@ -504,6 +548,7 @@ impl GraphGenerator {
         layers.retain(|l| !l.is_empty());
 
         let padding = 120.0 * scale;
+        let cx = self.width as f64 / 2.0;
         let num_layers = layers.len().max(1);
         let layer_height = (self.height as f64 - padding * 2.0) / num_layers as f64;
 
@@ -515,13 +560,24 @@ impl GraphGenerator {
             }
 
             let base_y = padding + layer_height * (layer_idx as f64 + 0.5);
+
+            // Sort nodes within layer by centrality (high centrality = more central position)
+            let mut layer_nodes: Vec<_> = layer.iter().collect();
+            layer_nodes.sort_by(|a, b| {
+                let ca = centralities.get(&a.name).unwrap_or(&0.0);
+                let cb = centralities.get(&b.name).unwrap_or(&0.0);
+                cb.partial_cmp(ca).unwrap_or(std::cmp::Ordering::Equal)
+            });
+
             let spacing = (self.width as f64 - padding * 2.0) / (layer.len() + 1) as f64;
 
-            for (i, node) in layer.iter().enumerate() {
+            for (i, node) in layer_nodes.iter().enumerate() {
                 let role = Self::node_role(node);
                 let depth = *depths.get(&node.name).unwrap_or(&0);
                 let in_deg = *in_degrees.get(&node.name).unwrap_or(&0);
                 let out_deg = *out_degrees.get(&node.name).unwrap_or(&0);
+                let centrality = *centralities.get(&node.name).unwrap_or(&0.0);
+                let clustering = *clusterings.get(&node.name).unwrap_or(&0.0);
 
                 // Assign hue based on role with hash-based variation
                 let role_hue = palette::role_hue(role);
@@ -529,19 +585,26 @@ impl GraphGenerator {
                     (Self::hash_to_float(&node.name) - 0.5) * palette::HUE_VARIANCE * 2.0;
                 let hue = role_hue + hash_offset + rng.gen_range(-3.0..3.0);
 
-                let base_x = padding + spacing * (i + 1) as f64;
+                // Position within layer - high centrality nodes get positioned toward center
+                let natural_x = padding + spacing * (i + 1) as f64;
+                let center_pull = centrality * 0.3;
+                let base_x = natural_x * (1.0 - center_pull) + cx * center_pull;
 
-                // Add slight jitter for organic feel
-                let jitter = 15.0 * scale;
+                // Add slight jitter for organic feel - less jitter for high centrality
+                let jitter = 15.0 * scale * (1.0 - centrality * 0.5);
                 let x = base_x + rng.gen_range(-jitter..jitter);
                 let y = base_y + rng.gen_range(-jitter..jitter);
 
+                // Node size based on throughput, connectivity, and centrality
                 let base_radius = 12.0 * scale;
                 let throughput_factor = (node.throughput as f64).log10().max(1.0) / 6.0;
                 let connectivity = (in_deg + out_deg) as f64;
                 let degree_factor = (connectivity / 10.0).min(1.0);
-                let node_radius =
-                    base_radius + (throughput_factor * 0.7 + degree_factor * 0.3) * 22.0 * scale;
+                let centrality_factor = centrality * 2.0;
+                let node_radius = base_radius
+                    + (throughput_factor * 0.5 + degree_factor * 0.25 + centrality_factor * 0.25)
+                        * 22.0
+                        * scale;
 
                 positions.push(PositionedNode {
                     name: node.name.clone(),
@@ -555,6 +618,8 @@ impl GraphGenerator {
                     in_degree: in_deg,
                     out_degree: out_deg,
                     hue,
+                    centrality,
+                    clustering,
                 });
             }
         }
@@ -697,6 +762,10 @@ impl GraphGenerator {
     /// - Sources: Cyan-shifted, outer ring, intense glow
     /// - Sinks: Purple-shifted, softer glow
     /// - Processors: Balanced appearance
+    ///
+    /// Centrality and clustering influence appearance:
+    /// - High centrality: Larger glow, more prominent stroke
+    /// - High clustering: Subtle secondary ring (interconnected neighborhood)
     fn draw_nodes(&self, positions: &[PositionedNode], _rng: &mut impl Rng) -> Vec<String> {
         let scale = self.scale();
 
@@ -708,8 +777,11 @@ impl GraphGenerator {
 
                 let mut elements = Vec::new();
 
-                // Glow radius varies by connectivity (high-degree nodes glow more)
-                let connectivity_factor = 1.0 + ((node.in_degree + node.out_degree) as f64 / 15.0).min(0.5);
+                // Glow radius varies by connectivity and centrality
+                // High centrality = more prominent glow (hub nodes stand out)
+                let connectivity_factor =
+                    1.0 + ((node.in_degree + node.out_degree) as f64 / 15.0).min(0.5);
+                let centrality_glow_boost = 1.0 + node.centrality * 0.5;
 
                 // Outer glow using radial gradient (smooth falloff)
                 let glow_multiplier = match node.role {
@@ -717,10 +789,11 @@ impl GraphGenerator {
                     NodeRole::Sink => 1.8,
                     NodeRole::Processor => 2.0,
                 };
-                let glow_radius = node.radius * glow_multiplier * connectivity_factor;
+                let glow_radius =
+                    node.radius * glow_multiplier * connectivity_factor * centrality_glow_boost;
 
-                // Use filter for high-activity nodes, simple gradient for others
-                let filter_attr = if activity > 0.5 {
+                // Use filter for high-activity or high-centrality nodes
+                let filter_attr = if activity > 0.5 || node.centrality > 0.3 {
                     r#" filter="url(#intenseGlow)""#
                 } else {
                     ""
@@ -732,15 +805,32 @@ impl GraphGenerator {
                 ));
 
                 // Core node with radial gradient fill
+                // High centrality nodes get brighter, more saturated strokes
+                let centrality_saturation_boost = node.centrality * 0.15;
+                let centrality_lightness_boost = node.centrality * 0.1;
                 let stroke_color = match node.role {
-                    NodeRole::Source => palette::hsl_to_hex(node.hue - 5.0, 0.8, 0.7),
-                    NodeRole::Sink => palette::hsl_to_hex(node.hue + 5.0, 0.7, 0.6),
-                    NodeRole::Processor => palette::hsl_to_hex(node.hue, 0.75, 0.65),
+                    NodeRole::Source => palette::hsl_to_hex(
+                        node.hue - 5.0,
+                        0.8 + centrality_saturation_boost,
+                        0.7 + centrality_lightness_boost,
+                    ),
+                    NodeRole::Sink => palette::hsl_to_hex(
+                        node.hue + 5.0,
+                        0.7 + centrality_saturation_boost,
+                        0.6 + centrality_lightness_boost,
+                    ),
+                    NodeRole::Processor => palette::hsl_to_hex(
+                        node.hue,
+                        0.75 + centrality_saturation_boost,
+                        0.65 + centrality_lightness_boost,
+                    ),
                 };
+                // High centrality = thicker stroke (more prominent)
+                let centrality_stroke_boost = node.centrality * 0.5;
                 let stroke_width = match node.role {
-                    NodeRole::Source => 2.0 * scale,
-                    NodeRole::Sink => 1.0 * scale,
-                    NodeRole::Processor => 1.5 * scale,
+                    NodeRole::Source => (2.0 + centrality_stroke_boost) * scale,
+                    NodeRole::Sink => (1.0 + centrality_stroke_boost) * scale,
+                    NodeRole::Processor => (1.5 + centrality_stroke_boost) * scale,
                 };
                 elements.push(format!(
                     r#"<circle cx="{:.1}" cy="{:.1}" r="{:.1}" fill="url(#nodeGrad_{})" stroke="{}" stroke-width="{:.1}" filter="url(#softGlow)"/>"#,
@@ -748,16 +838,18 @@ impl GraphGenerator {
                 ));
 
                 // Bright center highlight - gives that "lit from within" look
-                let center_radius = node.radius * (0.25 + activity * 0.15);
+                // High centrality nodes have slightly larger, brighter centers
+                let center_radius =
+                    node.radius * (0.25 + activity * 0.15 + node.centrality * 0.1);
                 let glow_color = palette::glow_color(node.hue);
-                let center_opacity = 0.5 + activity * 0.4;
+                let center_opacity = 0.5 + activity * 0.4 + node.centrality * 0.1;
                 elements.push(format!(
                     r#"<circle cx="{:.1}" cy="{:.1}" r="{:.1}" fill="{}" opacity="{:.2}"/>"#,
                     node.x - node.radius * 0.2,
                     node.y - node.radius * 0.2,
                     center_radius,
                     glow_color,
-                    center_opacity
+                    center_opacity.min(1.0)
                 ));
 
                 // Sources get an additional outer ring to show they're emitters
@@ -766,6 +858,26 @@ impl GraphGenerator {
                     elements.push(format!(
                         r#"<circle cx="{:.1}" cy="{:.1}" r="{:.1}" fill="none" stroke="{}" stroke-width="{:.1}" opacity="0.5" filter="url(#softGlow)"/>"#,
                         node.x, node.y, ring_radius, stroke_color, 1.5 * scale
+                    ));
+                }
+
+                // High clustering nodes get a subtle secondary halo ring
+                // This indicates they're part of a tightly interconnected neighborhood
+                if node.clustering > 0.4 {
+                    let cluster_ring_radius = node.radius * 1.4;
+                    let cluster_opacity = (node.clustering - 0.4) * 0.5; // 0.0 to 0.3
+                    let cluster_color =
+                        palette::hsl_to_hex(node.hue + 15.0, 0.5, 0.6); // Slightly shifted hue
+                    elements.push(format!(
+                        r#"<circle cx="{:.1}" cy="{:.1}" r="{:.1}" fill="none" stroke="{}" stroke-width="{:.1}" opacity="{:.2}" stroke-dasharray="{:.1} {:.1}"/>"#,
+                        node.x,
+                        node.y,
+                        cluster_ring_radius,
+                        cluster_color,
+                        1.0 * scale,
+                        cluster_opacity,
+                        3.0 * scale,
+                        3.0 * scale
                     ));
                 }
 

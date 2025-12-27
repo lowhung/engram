@@ -153,6 +153,152 @@ impl AdjacencyGraph {
             .collect()
     }
 
+    /// Calculate betweenness centrality for all nodes.
+    ///
+    /// Betweenness centrality measures how often a node lies on shortest paths
+    /// between other nodes. High betweenness = important bridge/hub.
+    ///
+    /// Returns a map from node name to centrality score (0.0 to 1.0 normalized).
+    pub fn betweenness_centrality(&self) -> HashMap<String, f64> {
+        let node_names: Vec<&str> = self.nodes.iter().map(|n| n.name.as_str()).collect();
+        let n = node_names.len();
+
+        if n < 2 {
+            return self.nodes.iter().map(|n| (n.name.clone(), 0.0)).collect();
+        }
+
+        let mut centrality: HashMap<String, f64> = node_names
+            .iter()
+            .map(|&name| (name.to_string(), 0.0))
+            .collect();
+
+        // Build adjacency list for faster lookups
+        let mut adj: HashMap<&str, Vec<&str>> = HashMap::new();
+        for name in &node_names {
+            adj.insert(name, self.outgoing(name));
+        }
+
+        // For each source node, do BFS and count shortest paths
+        for &source in &node_names {
+            // BFS to find shortest paths from source
+            let mut dist: HashMap<&str, i32> = HashMap::new();
+            let mut num_paths: HashMap<&str, f64> = HashMap::new();
+            let mut predecessors: HashMap<&str, Vec<&str>> = HashMap::new();
+
+            for &name in &node_names {
+                dist.insert(name, -1);
+                num_paths.insert(name, 0.0);
+                predecessors.insert(name, Vec::new());
+            }
+
+            dist.insert(source, 0);
+            num_paths.insert(source, 1.0);
+
+            let mut queue = std::collections::VecDeque::new();
+            let mut stack = Vec::new();
+            queue.push_back(source);
+
+            while let Some(v) = queue.pop_front() {
+                stack.push(v);
+                let v_dist = dist[v];
+
+                for &w in adj.get(v).unwrap_or(&Vec::new()) {
+                    // First time seeing w?
+                    if dist[w] < 0 {
+                        dist.insert(w, v_dist + 1);
+                        queue.push_back(w);
+                    }
+                    // Shortest path to w via v?
+                    if dist[w] == v_dist + 1 {
+                        *num_paths.get_mut(w).unwrap() += num_paths[v];
+                        predecessors.get_mut(w).unwrap().push(v);
+                    }
+                }
+            }
+
+            // Accumulate dependencies
+            let mut dependency: HashMap<&str, f64> =
+                node_names.iter().map(|&name| (name, 0.0)).collect();
+
+            while let Some(w) = stack.pop() {
+                for &v in &predecessors[w] {
+                    let fraction = num_paths[v] / num_paths[w];
+                    *dependency.get_mut(v).unwrap() += fraction * (1.0 + dependency[w]);
+                }
+                if w != source {
+                    *centrality.get_mut(w).unwrap() += dependency[w];
+                }
+            }
+        }
+
+        // Normalize by (n-1)*(n-2) for directed graphs
+        let norm = ((n - 1) * (n - 2)) as f64;
+        if norm > 0.0 {
+            for val in centrality.values_mut() {
+                *val /= norm;
+            }
+        }
+
+        centrality
+    }
+
+    /// Calculate clustering coefficient for all nodes.
+    ///
+    /// Clustering coefficient measures how connected a node's neighbors are
+    /// to each other. High clustering = tight-knit local community.
+    ///
+    /// Returns a map from node name to coefficient (0.0 to 1.0).
+    pub fn clustering_coefficients(&self) -> HashMap<String, f64> {
+        let mut coefficients: HashMap<String, f64> = HashMap::new();
+
+        // Build bidirectional neighbor sets (treat as undirected for clustering)
+        let mut neighbors: HashMap<&str, HashSet<&str>> = HashMap::new();
+        for node in &self.nodes {
+            neighbors.insert(node.name.as_str(), HashSet::new());
+        }
+        for edge in &self.edges {
+            neighbors
+                .get_mut(edge.source.as_str())
+                .map(|s| s.insert(edge.target.as_str()));
+            neighbors
+                .get_mut(edge.target.as_str())
+                .map(|s| s.insert(edge.source.as_str()));
+        }
+
+        for node in &self.nodes {
+            let node_neighbors = &neighbors[node.name.as_str()];
+            let k = node_neighbors.len();
+
+            if k < 2 {
+                coefficients.insert(node.name.clone(), 0.0);
+                continue;
+            }
+
+            // Count edges between neighbors
+            let mut neighbor_edges = 0;
+            let neighbor_vec: Vec<&&str> = node_neighbors.iter().collect();
+            for i in 0..neighbor_vec.len() {
+                for j in (i + 1)..neighbor_vec.len() {
+                    if neighbors[*neighbor_vec[i]].contains(*neighbor_vec[j]) {
+                        neighbor_edges += 1;
+                    }
+                }
+            }
+
+            // Clustering coefficient = 2 * edges / (k * (k-1))
+            let max_edges = k * (k - 1) / 2;
+            let coeff = if max_edges > 0 {
+                neighbor_edges as f64 / max_edges as f64
+            } else {
+                0.0
+            };
+
+            coefficients.insert(node.name.clone(), coeff);
+        }
+
+        coefficients
+    }
+
     /// Generate sample adjacency graph for testing.
     pub fn sample(seed: u64) -> Self {
         use rand::{Rng, SeedableRng};
