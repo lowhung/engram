@@ -187,6 +187,8 @@ pub enum GraphStyle {
     Clustered,
     /// Random scattered positions
     Scatter,
+    /// Fixed NxN matrix with nodes at grid intersections, edges route around obstacles
+    Matrix,
 }
 
 impl Default for GraphGenerator {
@@ -1409,6 +1411,233 @@ impl GraphGenerator {
         self.wrap_svg(&format!("{}\n{}", edges.join("\n"), nodes.join("\n")))
     }
 
+    /// Position nodes on a fixed NxN matrix grid.
+    ///
+    /// Creates grid positions and randomly assigns nodes to slots.
+    /// Empty slots remain empty, creating a sparse matrix appearance.
+    fn position_nodes_matrix(
+        &self,
+        metrics: &NeuralMetrics,
+        rng: &mut impl Rng,
+    ) -> Vec<PositionedNode> {
+        let graph = &metrics.graph;
+        let scale = self.scale();
+        let padding = 150.0 * scale;
+
+        let n = graph.nodes.len();
+        // Grid size: enough slots for all nodes with some empty space
+        let grid_size = ((n as f64 * 1.5).sqrt().ceil() as usize).max(3);
+
+        let cell_w = (self.width as f64 - padding * 2.0) / grid_size as f64;
+        let cell_h = (self.height as f64 - padding * 2.0) / grid_size as f64;
+
+        // Generate all possible grid positions
+        let mut slots: Vec<(usize, usize)> = (0..grid_size)
+            .flat_map(|row| (0..grid_size).map(move |col| (row, col)))
+            .collect();
+
+        // Shuffle and take only as many as we have nodes
+        use rand::seq::SliceRandom;
+        slots.shuffle(rng);
+        slots.truncate(n);
+
+        let depths = Self::calculate_depths(&graph.nodes, &graph.edges);
+        let (in_degrees, out_degrees) = Self::calculate_degrees(&graph.nodes, &graph.edges);
+        let centralities = graph.betweenness_centrality();
+        let clusterings = graph.clustering_coefficients();
+        let pageranks = graph.pagerank(0.85, 20);
+        let cycle_nodes: std::collections::HashSet<String> =
+            graph.find_cycle_nodes().into_iter().collect();
+
+        graph
+            .nodes
+            .iter()
+            .enumerate()
+            .map(|(i, node)| {
+                let (row, col) = slots[i];
+
+                // Fixed grid position (center of cell)
+                let x = padding + cell_w * (col as f64 + 0.5);
+                let y = padding + cell_h * (row as f64 + 0.5);
+
+                let role = Self::node_role(node);
+                let depth = *depths.get(&node.name).unwrap_or(&0);
+                let in_deg = *in_degrees.get(&node.name).unwrap_or(&0);
+                let out_deg = *out_degrees.get(&node.name).unwrap_or(&0);
+                let centrality = *centralities.get(&node.name).unwrap_or(&0.0);
+                let clustering = *clusterings.get(&node.name).unwrap_or(&0.0);
+                let pagerank = *pageranks.get(&node.name).unwrap_or(&0.0);
+                let in_cycle = cycle_nodes.contains(&node.name);
+                let temporal = metrics
+                    .temporal
+                    .nodes
+                    .get(&node.name)
+                    .cloned()
+                    .unwrap_or_default();
+
+                let hash = Self::hash_to_float(&node.name);
+                let color_index = (hash * 1000.0) as usize;
+                let ring_count = if rng.gen_bool(0.5) {
+                    1
+                } else {
+                    rng.gen_range(2..=4)
+                };
+
+                let importance = (centrality + pagerank) / 2.0;
+                let base_radius = 18.0 * scale;
+                let node_radius = base_radius + importance * 25.0 * scale;
+
+                PositionedNode {
+                    name: node.name.clone(),
+                    x,
+                    y,
+                    radius: node_radius,
+                    throughput: node.throughput,
+                    rate: node.rate,
+                    role,
+                    depth,
+                    in_degree: in_deg,
+                    out_degree: out_deg,
+                    color_index,
+                    centrality,
+                    clustering,
+                    pagerank,
+                    in_cycle,
+                    temporal,
+                    ring_count,
+                }
+            })
+            .collect()
+    }
+
+    /// Draw edges that route around other nodes.
+    ///
+    /// Uses curved paths that deflect away from obstacles.
+    fn draw_edges_avoiding_nodes(
+        &self,
+        positions: &[PositionedNode],
+        edges: &[GraphEdge],
+        rng: &mut impl Rng,
+    ) -> Vec<String> {
+        let scale = self.scale();
+        let pos_map: HashMap<&str, &PositionedNode> =
+            positions.iter().map(|p| (p.name.as_str(), p)).collect();
+
+        edges
+            .iter()
+            .filter_map(|edge| {
+                let src = pos_map.get(edge.source.as_str())?;
+                let tgt = pos_map.get(edge.target.as_str())?;
+
+                let dx = tgt.x - src.x;
+                let dy = tgt.y - src.y;
+                let dist = (dx * dx + dy * dy).sqrt();
+
+                if dist < src.radius + tgt.radius + 10.0 * scale {
+                    return None;
+                }
+
+                // Start/end at node edges
+                let angle = dy.atan2(dx);
+                let start_x = src.x + angle.cos() * src.radius;
+                let start_y = src.y + angle.sin() * src.radius;
+                let end_x = tgt.x - angle.cos() * tgt.radius;
+                let end_y = tgt.y - angle.sin() * tgt.radius;
+
+                // Check for nodes along the path and calculate deflection
+                let mid_x = (start_x + end_x) / 2.0;
+                let mid_y = (start_y + end_y) / 2.0;
+
+                // Find nodes that might be in the way (excluding src and tgt)
+                let mut max_deflection = 0.0f64;
+                let mut deflection_direction = 1.0f64;
+
+                for node in positions {
+                    if node.name == src.name || node.name == tgt.name {
+                        continue;
+                    }
+
+                    // Check if node is near the line between src and tgt
+                    let node_dx = node.x - src.x;
+                    let node_dy = node.y - src.y;
+
+                    // Project node onto the line
+                    let line_len_sq = dx * dx + dy * dy;
+                    if line_len_sq < 1.0 {
+                        continue;
+                    }
+                    let t = ((node_dx * dx + node_dy * dy) / line_len_sq).clamp(0.0, 1.0);
+
+                    // Point on line closest to node
+                    let closest_x = src.x + t * dx;
+                    let closest_y = src.y + t * dy;
+
+                    // Distance from node center to line
+                    let dist_to_line = ((node.x - closest_x).powi(2) + (node.y - closest_y).powi(2)).sqrt();
+
+                    // If the line would pass through or near the node, we need to deflect
+                    let clearance = node.radius + 30.0 * scale;
+                    if dist_to_line < clearance && t > 0.1 && t < 0.9 {
+                        // Calculate required deflection
+                        let needed_deflection = clearance - dist_to_line + 50.0 * scale;
+                        if needed_deflection > max_deflection {
+                            max_deflection = needed_deflection;
+                            // Deflect perpendicular to the line, away from the obstacle
+                            let perp_x = -(dy / dist);
+                            let perp_y = dx / dist;
+                            let to_node_x = node.x - mid_x;
+                            let to_node_y = node.y - mid_y;
+                            // Choose direction away from obstacle
+                            deflection_direction = if perp_x * to_node_x + perp_y * to_node_y > 0.0 {
+                                -1.0
+                            } else {
+                                1.0
+                            };
+                        }
+                    }
+                }
+
+                // Base curve from topic hash
+                let topic_hash = Self::hash_to_float(&edge.topic);
+                let base_curve = 40.0 * scale;
+                let hash_direction = if topic_hash > 0.5 { 1.0 } else { -1.0 };
+
+                // Final curve amount: base curve + obstacle avoidance
+                let curve_amount = if max_deflection > 0.0 {
+                    max_deflection * deflection_direction
+                } else {
+                    (base_curve + rng.gen_range(-20.0..20.0) * scale) * hash_direction
+                };
+
+                // Control point for bezier curve
+                let perp_angle = angle + PI / 2.0;
+                let ctrl_x = mid_x + perp_angle.cos() * curve_amount;
+                let ctrl_y = mid_y + perp_angle.sin() * curve_amount;
+
+                // Stroke width
+                let rate = edge.rate.unwrap_or(10.0);
+                let base_width = 2.0 * scale;
+                let rate_factor = (rate.log10().max(0.0) / 2.0).min(2.0);
+                let stroke_width = base_width + rate_factor * 2.0 * scale;
+
+                let edge_color = self.palette.node_color(src.color_index);
+
+                Some(format!(
+                    r#"<path d="M {:.1} {:.1} Q {:.1} {:.1} {:.1} {:.1}" fill="none" stroke="{}" stroke-width="{:.2}" stroke-linecap="round"/>"#,
+                    start_x, start_y, ctrl_x, ctrl_y, end_x, end_y, edge_color, stroke_width
+                ))
+            })
+            .collect()
+    }
+
+    /// Generate matrix style graph with obstacle-avoiding edges.
+    fn generate_matrix(&self, metrics: &NeuralMetrics, rng: &mut impl Rng) -> String {
+        let positions = self.position_nodes_matrix(metrics, rng);
+        let edges = self.draw_edges_avoiding_nodes(&positions, &metrics.graph.edges, rng);
+        let nodes = self.draw_nodes(&positions);
+        self.wrap_svg(&format!("{}\n{}", edges.join("\n"), nodes.join("\n")))
+    }
+
     /// Wrap content in a simple SVG with solid background.
     fn wrap_svg(&self, content: &str) -> String {
         format!(
@@ -1433,6 +1662,7 @@ impl Generator for GraphGenerator {
             GraphStyle::Radial => "graph_radial",
             GraphStyle::Clustered => "graph_clustered",
             GraphStyle::Scatter => "graph_scatter",
+            GraphStyle::Matrix => "graph_matrix",
         }
     }
 
@@ -1468,6 +1698,7 @@ impl Generator for GraphGenerator {
             GraphStyle::Radial => self.generate_radial(&metrics, &mut rng),
             GraphStyle::Clustered => self.generate_clustered(&metrics, &mut rng),
             GraphStyle::Scatter => self.generate_scatter(&metrics, &mut rng),
+            GraphStyle::Matrix => self.generate_matrix(&metrics, &mut rng),
         }
     }
 

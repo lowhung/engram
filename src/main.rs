@@ -150,6 +150,8 @@ enum GraphStyleArg {
     Clustered,
     /// Random scattered positions
     Scatter,
+    /// Fixed NxN matrix, edges route around nodes
+    Matrix,
 }
 
 impl GraphStyleArg {
@@ -163,6 +165,7 @@ impl GraphStyleArg {
             GraphStyleArg::Radial => GraphStyle::Radial,
             GraphStyleArg::Clustered => GraphStyle::Clustered,
             GraphStyleArg::Scatter => GraphStyle::Scatter,
+            GraphStyleArg::Matrix => GraphStyle::Matrix,
         }
     }
 
@@ -176,6 +179,7 @@ impl GraphStyleArg {
             GraphStyleArg::Radial => "radial",
             GraphStyleArg::Clustered => "clustered",
             GraphStyleArg::Scatter => "scatter",
+            GraphStyleArg::Matrix => "matrix",
         }
     }
 
@@ -189,6 +193,7 @@ impl GraphStyleArg {
             GraphStyleArg::Radial,
             GraphStyleArg::Clustered,
             GraphStyleArg::Scatter,
+            GraphStyleArg::Matrix,
         ]
     }
 }
