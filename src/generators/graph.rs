@@ -73,16 +73,26 @@ pub mod palette {
             use rand::{Rng, SeedableRng};
             let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
 
-            // All colors that can be used as backgrounds or nodes
-            let all_colors = [
-                // Darks/neutrals
-                BASE, MANTLE, CRUST, SURFACE0, SURFACE1, SURFACE2, // Vibrant colors
+            // Dark/neutral backgrounds
+            let dark_bgs = [BASE, MANTLE, CRUST, SURFACE0, SURFACE1, SURFACE2];
+            // Vibrant backgrounds
+            let vibrant_bgs = [
                 ROSEWATER, FLAMINGO, PINK, MAUVE, RED, MAROON, PEACH, YELLOW, GREEN, TEAL, SKY,
                 SAPPHIRE, BLUE, LAVENDER,
             ];
 
-            // Pick a random background from all colors
-            let background = all_colors[rng.gen_range(0..all_colors.len())];
+            // 50/50 chance of dark vs vibrant background
+            let background = if rng.gen_bool(0.5) {
+                dark_bgs[rng.gen_range(0..dark_bgs.len())]
+            } else {
+                vibrant_bgs[rng.gen_range(0..vibrant_bgs.len())]
+            };
+
+            // All colors for nodes
+            let all_colors = [
+                BASE, MANTLE, CRUST, SURFACE0, SURFACE1, SURFACE2, ROSEWATER, FLAMINGO, PINK,
+                MAUVE, RED, MAROON, PEACH, YELLOW, GREEN, TEAL, SKY, SAPPHIRE, BLUE, LAVENDER,
+            ];
 
             // For node colors, pick from colors that contrast with background
             // Remove the background color from available node colors
