@@ -1422,11 +1422,14 @@ impl GraphGenerator {
     ) -> Vec<PositionedNode> {
         let graph = &metrics.graph;
         let scale = self.scale();
-        let padding = 80.0 * scale;
+
+        // Random density: 1.1 = tight/clustered, 2.0 = very spread out
+        let density_factor = rng.gen_range(1.1..2.0);
+        let padding = rng.gen_range(60.0..120.0) * scale;
 
         let n = graph.nodes.len();
-        // Grid size: just enough to fit nodes with ~30% empty slots
-        let grid_size = ((n as f64 * 1.3).sqrt().ceil() as usize).max(3);
+        // Grid size varies based on random density
+        let grid_size = ((n as f64 * density_factor).sqrt().ceil() as usize).max(3);
 
         let cell_w = (self.width as f64 - padding * 2.0) / grid_size as f64;
         let cell_h = (self.height as f64 - padding * 2.0) / grid_size as f64;
