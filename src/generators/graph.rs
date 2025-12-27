@@ -784,10 +784,29 @@ impl GraphGenerator {
         )
     }
 
-    /// Generate SVG filter definitions for glow effects.
+    /// Generate SVG filter definitions for glow effects and background textures.
     fn generate_defs(&self, positions: &[PositionedNode]) -> String {
         let scale = self.scale();
         let mut defs = String::from("<defs>\n");
+
+        // Noise texture filter for background grain
+        defs.push_str(&format!(
+            r#"  <filter id="noiseFilter" x="0%" y="0%" width="100%" height="100%">
+    <feTurbulence type="fractalNoise" baseFrequency="{:.4}" numOctaves="3" result="noise"/>
+    <feColorMatrix type="matrix" values="0 0 0 0 0.03  0 0 0 0 0.05  0 0 0 0 0.08  0 0 0 0.15 0"/>
+  </filter>
+"#,
+            0.5 / scale // Adjust frequency based on scale
+        ));
+
+        // Vignette gradient (radial fade from transparent center to dark edges)
+        defs.push_str(
+            "  <radialGradient id=\"vignette\" cx=\"50%\" cy=\"50%\" r=\"70%\" fx=\"50%\" fy=\"50%\">\n\
+             \x20\x20\x20\x20<stop offset=\"0%\" stop-color=\"#000000\" stop-opacity=\"0\"/>\n\
+             \x20\x20\x20\x20<stop offset=\"60%\" stop-color=\"#000000\" stop-opacity=\"0\"/>\n\
+             \x20\x20\x20\x20<stop offset=\"100%\" stop-color=\"#000000\" stop-opacity=\"0.7\"/>\n\
+             \x20\x20</radialGradient>\n",
+        );
 
         // Soft glow filter - used for outer node halos
         let blur_std = 8.0 * scale;
@@ -885,16 +904,22 @@ impl GraphGenerator {
         format!(
             r#"<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {} {}" width="{}" height="{}">
+  {}
+  <!-- Background -->
   <rect width="100%" height="100%" fill="{}"/>
+  <!-- Noise texture overlay -->
+  <rect width="100%" height="100%" filter="url(#noiseFilter)" opacity="1"/>
+  <!-- Graph content -->
   {}
-  {}
+  <!-- Vignette overlay -->
+  <rect width="100%" height="100%" fill="url(#vignette)"/>
 </svg>"#,
             self.width,
             self.height,
             self.width,
             self.height,
-            palette::BG,
             defs,
+            palette::BG,
             content
         )
     }
