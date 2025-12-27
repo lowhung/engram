@@ -140,6 +140,16 @@ enum GraphStyleArg {
     Circular,
     /// Top-to-bottom flow layout
     Hierarchical,
+    /// Grid-based layout
+    Grid,
+    /// Spiral outward from center
+    Spiral,
+    /// Concentric rings by depth
+    Radial,
+    /// Tight clusters with long connections
+    Clustered,
+    /// Random scattered positions
+    Scatter,
 }
 
 impl GraphStyleArg {
@@ -148,6 +158,11 @@ impl GraphStyleArg {
             GraphStyleArg::Organic => GraphStyle::Organic,
             GraphStyleArg::Circular => GraphStyle::Circular,
             GraphStyleArg::Hierarchical => GraphStyle::Hierarchical,
+            GraphStyleArg::Grid => GraphStyle::Grid,
+            GraphStyleArg::Spiral => GraphStyle::Spiral,
+            GraphStyleArg::Radial => GraphStyle::Radial,
+            GraphStyleArg::Clustered => GraphStyle::Clustered,
+            GraphStyleArg::Scatter => GraphStyle::Scatter,
         }
     }
 
@@ -156,6 +171,11 @@ impl GraphStyleArg {
             GraphStyleArg::Organic => "organic",
             GraphStyleArg::Circular => "circular",
             GraphStyleArg::Hierarchical => "hierarchical",
+            GraphStyleArg::Grid => "grid",
+            GraphStyleArg::Spiral => "spiral",
+            GraphStyleArg::Radial => "radial",
+            GraphStyleArg::Clustered => "clustered",
+            GraphStyleArg::Scatter => "scatter",
         }
     }
 
@@ -164,6 +184,11 @@ impl GraphStyleArg {
             GraphStyleArg::Organic,
             GraphStyleArg::Circular,
             GraphStyleArg::Hierarchical,
+            GraphStyleArg::Grid,
+            GraphStyleArg::Spiral,
+            GraphStyleArg::Radial,
+            GraphStyleArg::Clustered,
+            GraphStyleArg::Scatter,
         ]
     }
 }

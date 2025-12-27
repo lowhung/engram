@@ -177,6 +177,16 @@ pub enum GraphStyle {
     Circular,
     /// Hierarchical top-to-bottom flow
     Hierarchical,
+    /// Grid-based layout
+    Grid,
+    /// Spiral outward from center
+    Spiral,
+    /// Concentric rings based on node depth
+    Radial,
+    /// Tight clusters connected by long edges
+    Clustered,
+    /// Random scattered positions
+    Scatter,
 }
 
 impl Default for GraphGenerator {
@@ -911,6 +921,494 @@ impl GraphGenerator {
         self.wrap_svg(&format!("{}\n{}", edges.join("\n"), nodes.join("\n")))
     }
 
+    /// Position nodes in a grid pattern.
+    fn position_nodes_grid(
+        &self,
+        metrics: &NeuralMetrics,
+        rng: &mut impl Rng,
+    ) -> Vec<PositionedNode> {
+        let graph = &metrics.graph;
+        let scale = self.scale();
+        let padding = 120.0 * scale;
+
+        let n = graph.nodes.len();
+        let cols = (n as f64).sqrt().ceil() as usize;
+        let rows = (n + cols - 1) / cols;
+
+        let cell_w = (self.width as f64 - padding * 2.0) / cols as f64;
+        let cell_h = (self.height as f64 - padding * 2.0) / rows as f64;
+
+        let depths = Self::calculate_depths(&graph.nodes, &graph.edges);
+        let (in_degrees, out_degrees) = Self::calculate_degrees(&graph.nodes, &graph.edges);
+        let centralities = graph.betweenness_centrality();
+        let clusterings = graph.clustering_coefficients();
+        let pageranks = graph.pagerank(0.85, 20);
+        let cycle_nodes: std::collections::HashSet<String> =
+            graph.find_cycle_nodes().into_iter().collect();
+
+        graph
+            .nodes
+            .iter()
+            .enumerate()
+            .map(|(i, node)| {
+                let row = i / cols;
+                let col = i % cols;
+
+                let base_x = padding + cell_w * (col as f64 + 0.5);
+                let base_y = padding + cell_h * (row as f64 + 0.5);
+
+                // Add jitter
+                let jitter = 20.0 * scale;
+                let x = base_x + rng.gen_range(-jitter..jitter);
+                let y = base_y + rng.gen_range(-jitter..jitter);
+
+                let role = Self::node_role(node);
+                let depth = *depths.get(&node.name).unwrap_or(&0);
+                let in_deg = *in_degrees.get(&node.name).unwrap_or(&0);
+                let out_deg = *out_degrees.get(&node.name).unwrap_or(&0);
+                let centrality = *centralities.get(&node.name).unwrap_or(&0.0);
+                let clustering = *clusterings.get(&node.name).unwrap_or(&0.0);
+                let pagerank = *pageranks.get(&node.name).unwrap_or(&0.0);
+                let in_cycle = cycle_nodes.contains(&node.name);
+                let temporal = metrics
+                    .temporal
+                    .nodes
+                    .get(&node.name)
+                    .cloned()
+                    .unwrap_or_default();
+
+                let hash = Self::hash_to_float(&node.name);
+                let color_index = (hash * 1000.0) as usize;
+                let ring_count = if rng.gen_bool(0.5) {
+                    1
+                } else {
+                    rng.gen_range(2..=4)
+                };
+
+                let importance = (centrality + pagerank) / 2.0;
+                let base_radius = 15.0 * scale;
+                let node_radius = base_radius + importance * 20.0 * scale;
+
+                PositionedNode {
+                    name: node.name.clone(),
+                    x,
+                    y,
+                    radius: node_radius,
+                    throughput: node.throughput,
+                    rate: node.rate,
+                    role,
+                    depth,
+                    in_degree: in_deg,
+                    out_degree: out_deg,
+                    color_index,
+                    centrality,
+                    clustering,
+                    pagerank,
+                    in_cycle,
+                    temporal,
+                    ring_count,
+                }
+            })
+            .collect()
+    }
+
+    /// Generate grid style graph.
+    fn generate_grid(&self, metrics: &NeuralMetrics, rng: &mut impl Rng) -> String {
+        let positions = self.position_nodes_grid(metrics, rng);
+        let edges = self.draw_edges(&positions, &metrics.graph.edges, rng);
+        let nodes = self.draw_nodes(&positions);
+        self.wrap_svg(&format!("{}\n{}", edges.join("\n"), nodes.join("\n")))
+    }
+
+    /// Position nodes in a spiral pattern from center outward.
+    fn position_nodes_spiral(
+        &self,
+        metrics: &NeuralMetrics,
+        rng: &mut impl Rng,
+    ) -> Vec<PositionedNode> {
+        let graph = &metrics.graph;
+        let scale = self.scale();
+        let cx = self.width as f64 / 2.0;
+        let cy = self.height as f64 / 2.0;
+        let max_radius = (self.width.min(self.height) as f64 / 2.0) - 100.0 * scale;
+
+        let depths = Self::calculate_depths(&graph.nodes, &graph.edges);
+        let (in_degrees, out_degrees) = Self::calculate_degrees(&graph.nodes, &graph.edges);
+        let centralities = graph.betweenness_centrality();
+        let clusterings = graph.clustering_coefficients();
+        let pageranks = graph.pagerank(0.85, 20);
+        let cycle_nodes: std::collections::HashSet<String> =
+            graph.find_cycle_nodes().into_iter().collect();
+
+        let n = graph.nodes.len();
+        let turns = 2.5; // Number of spiral rotations
+
+        graph
+            .nodes
+            .iter()
+            .enumerate()
+            .map(|(i, node)| {
+                let t = i as f64 / n.max(1) as f64;
+                let angle = t * turns * 2.0 * PI;
+                let r = t * max_radius + 50.0 * scale;
+
+                let base_x = cx + angle.cos() * r;
+                let base_y = cy + angle.sin() * r;
+
+                let jitter = 15.0 * scale;
+                let x = base_x + rng.gen_range(-jitter..jitter);
+                let y = base_y + rng.gen_range(-jitter..jitter);
+
+                let role = Self::node_role(node);
+                let depth = *depths.get(&node.name).unwrap_or(&0);
+                let in_deg = *in_degrees.get(&node.name).unwrap_or(&0);
+                let out_deg = *out_degrees.get(&node.name).unwrap_or(&0);
+                let centrality = *centralities.get(&node.name).unwrap_or(&0.0);
+                let clustering = *clusterings.get(&node.name).unwrap_or(&0.0);
+                let pagerank = *pageranks.get(&node.name).unwrap_or(&0.0);
+                let in_cycle = cycle_nodes.contains(&node.name);
+                let temporal = metrics
+                    .temporal
+                    .nodes
+                    .get(&node.name)
+                    .cloned()
+                    .unwrap_or_default();
+
+                let hash = Self::hash_to_float(&node.name);
+                let color_index = (hash * 1000.0) as usize;
+                let ring_count = if rng.gen_bool(0.5) {
+                    1
+                } else {
+                    rng.gen_range(2..=4)
+                };
+
+                let importance = (centrality + pagerank) / 2.0;
+                let base_radius = 12.0 * scale;
+                let node_radius = base_radius + importance * 18.0 * scale;
+
+                PositionedNode {
+                    name: node.name.clone(),
+                    x,
+                    y,
+                    radius: node_radius,
+                    throughput: node.throughput,
+                    rate: node.rate,
+                    role,
+                    depth,
+                    in_degree: in_deg,
+                    out_degree: out_deg,
+                    color_index,
+                    centrality,
+                    clustering,
+                    pagerank,
+                    in_cycle,
+                    temporal,
+                    ring_count,
+                }
+            })
+            .collect()
+    }
+
+    /// Generate spiral style graph.
+    fn generate_spiral(&self, metrics: &NeuralMetrics, rng: &mut impl Rng) -> String {
+        let positions = self.position_nodes_spiral(metrics, rng);
+        let edges = self.draw_edges(&positions, &metrics.graph.edges, rng);
+        let nodes = self.draw_nodes(&positions);
+        self.wrap_svg(&format!("{}\n{}", edges.join("\n"), nodes.join("\n")))
+    }
+
+    /// Position nodes in concentric rings based on depth.
+    fn position_nodes_radial(
+        &self,
+        metrics: &NeuralMetrics,
+        rng: &mut impl Rng,
+    ) -> Vec<PositionedNode> {
+        let graph = &metrics.graph;
+        let scale = self.scale();
+        let cx = self.width as f64 / 2.0;
+        let cy = self.height as f64 / 2.0;
+        let max_radius = (self.width.min(self.height) as f64 / 2.0) - 100.0 * scale;
+
+        let depths = Self::calculate_depths(&graph.nodes, &graph.edges);
+        let (in_degrees, out_degrees) = Self::calculate_degrees(&graph.nodes, &graph.edges);
+        let centralities = graph.betweenness_centrality();
+        let clusterings = graph.clustering_coefficients();
+        let pageranks = graph.pagerank(0.85, 20);
+        let cycle_nodes: std::collections::HashSet<String> =
+            graph.find_cycle_nodes().into_iter().collect();
+
+        let max_depth = depths.values().copied().max().unwrap_or(0).max(1);
+
+        // Group nodes by depth
+        let mut layers: Vec<Vec<&GraphNode>> = vec![vec![]; (max_depth + 1) as usize];
+        for node in &graph.nodes {
+            let depth = *depths.get(&node.name).unwrap_or(&0) as usize;
+            if depth < layers.len() {
+                layers[depth].push(node);
+            }
+        }
+
+        let mut positions = Vec::new();
+        let ring_spacing = max_radius / (max_depth + 1) as f64;
+
+        for (depth_idx, layer) in layers.iter().enumerate() {
+            let ring_radius = ring_spacing * (depth_idx as f64 + 1.0);
+            let n = layer.len();
+
+            for (i, node) in layer.iter().enumerate() {
+                let angle = (i as f64 / n.max(1) as f64) * 2.0 * PI + rng.gen_range(-0.1..0.1);
+                let r = ring_radius + rng.gen_range(-15.0..15.0) * scale;
+
+                let x = cx + angle.cos() * r;
+                let y = cy + angle.sin() * r;
+
+                let role = Self::node_role(node);
+                let depth = *depths.get(&node.name).unwrap_or(&0);
+                let in_deg = *in_degrees.get(&node.name).unwrap_or(&0);
+                let out_deg = *out_degrees.get(&node.name).unwrap_or(&0);
+                let centrality = *centralities.get(&node.name).unwrap_or(&0.0);
+                let clustering = *clusterings.get(&node.name).unwrap_or(&0.0);
+                let pagerank = *pageranks.get(&node.name).unwrap_or(&0.0);
+                let in_cycle = cycle_nodes.contains(&node.name);
+                let temporal = metrics
+                    .temporal
+                    .nodes
+                    .get(&node.name)
+                    .cloned()
+                    .unwrap_or_default();
+
+                let hash = Self::hash_to_float(&node.name);
+                let color_index = (hash * 1000.0) as usize;
+                let ring_count = if rng.gen_bool(0.5) {
+                    1
+                } else {
+                    rng.gen_range(2..=4)
+                };
+
+                let importance = (centrality + pagerank) / 2.0;
+                let base_radius = 12.0 * scale;
+                let node_radius = base_radius + importance * 20.0 * scale;
+
+                positions.push(PositionedNode {
+                    name: node.name.clone(),
+                    x,
+                    y,
+                    radius: node_radius,
+                    throughput: node.throughput,
+                    rate: node.rate,
+                    role,
+                    depth,
+                    in_degree: in_deg,
+                    out_degree: out_deg,
+                    color_index,
+                    centrality,
+                    clustering,
+                    pagerank,
+                    in_cycle,
+                    temporal,
+                    ring_count,
+                });
+            }
+        }
+
+        positions
+    }
+
+    /// Generate radial style graph.
+    fn generate_radial(&self, metrics: &NeuralMetrics, rng: &mut impl Rng) -> String {
+        let positions = self.position_nodes_radial(metrics, rng);
+        let edges = self.draw_edges(&positions, &metrics.graph.edges, rng);
+        let nodes = self.draw_nodes(&positions);
+        self.wrap_svg(&format!("{}\n{}", edges.join("\n"), nodes.join("\n")))
+    }
+
+    /// Position nodes in tight clusters with long inter-cluster edges.
+    fn position_nodes_clustered(
+        &self,
+        metrics: &NeuralMetrics,
+        rng: &mut impl Rng,
+    ) -> Vec<PositionedNode> {
+        let graph = &metrics.graph;
+        let scale = self.scale();
+        let padding = 150.0 * scale;
+
+        let depths = Self::calculate_depths(&graph.nodes, &graph.edges);
+        let (in_degrees, out_degrees) = Self::calculate_degrees(&graph.nodes, &graph.edges);
+        let centralities = graph.betweenness_centrality();
+        let clusterings = graph.clustering_coefficients();
+        let pageranks = graph.pagerank(0.85, 20);
+        let cycle_nodes: std::collections::HashSet<String> =
+            graph.find_cycle_nodes().into_iter().collect();
+
+        // Create 3-5 cluster centers
+        let num_clusters = rng.gen_range(3..=5).min(graph.nodes.len());
+        let cluster_centers: Vec<(f64, f64)> = (0..num_clusters)
+            .map(|_| {
+                (
+                    rng.gen_range(padding..(self.width as f64 - padding)),
+                    rng.gen_range(padding..(self.height as f64 - padding)),
+                )
+            })
+            .collect();
+
+        graph
+            .nodes
+            .iter()
+            .enumerate()
+            .map(|(i, node)| {
+                // Assign to a cluster based on index
+                let cluster_idx = i % num_clusters;
+                let (cx, cy) = cluster_centers[cluster_idx];
+
+                // Tight clustering around center
+                let cluster_radius = 80.0 * scale;
+                let angle = rng.gen_range(0.0..2.0 * PI);
+                let r = rng.gen_range(0.0..cluster_radius);
+
+                let x = cx + angle.cos() * r;
+                let y = cy + angle.sin() * r;
+
+                let role = Self::node_role(node);
+                let depth = *depths.get(&node.name).unwrap_or(&0);
+                let in_deg = *in_degrees.get(&node.name).unwrap_or(&0);
+                let out_deg = *out_degrees.get(&node.name).unwrap_or(&0);
+                let centrality = *centralities.get(&node.name).unwrap_or(&0.0);
+                let clustering = *clusterings.get(&node.name).unwrap_or(&0.0);
+                let pagerank = *pageranks.get(&node.name).unwrap_or(&0.0);
+                let in_cycle = cycle_nodes.contains(&node.name);
+                let temporal = metrics
+                    .temporal
+                    .nodes
+                    .get(&node.name)
+                    .cloned()
+                    .unwrap_or_default();
+
+                let hash = Self::hash_to_float(&node.name);
+                let color_index = (hash * 1000.0) as usize;
+                let ring_count = if rng.gen_bool(0.5) {
+                    1
+                } else {
+                    rng.gen_range(2..=4)
+                };
+
+                let importance = (centrality + pagerank) / 2.0;
+                let base_radius = 10.0 * scale;
+                let node_radius = base_radius + importance * 15.0 * scale;
+
+                PositionedNode {
+                    name: node.name.clone(),
+                    x,
+                    y,
+                    radius: node_radius,
+                    throughput: node.throughput,
+                    rate: node.rate,
+                    role,
+                    depth,
+                    in_degree: in_deg,
+                    out_degree: out_deg,
+                    color_index,
+                    centrality,
+                    clustering,
+                    pagerank,
+                    in_cycle,
+                    temporal,
+                    ring_count,
+                }
+            })
+            .collect()
+    }
+
+    /// Generate clustered style graph.
+    fn generate_clustered(&self, metrics: &NeuralMetrics, rng: &mut impl Rng) -> String {
+        let positions = self.position_nodes_clustered(metrics, rng);
+        let edges = self.draw_edges(&positions, &metrics.graph.edges, rng);
+        let nodes = self.draw_nodes(&positions);
+        self.wrap_svg(&format!("{}\n{}", edges.join("\n"), nodes.join("\n")))
+    }
+
+    /// Position nodes randomly scattered across the canvas.
+    fn position_nodes_scatter(
+        &self,
+        metrics: &NeuralMetrics,
+        rng: &mut impl Rng,
+    ) -> Vec<PositionedNode> {
+        let graph = &metrics.graph;
+        let scale = self.scale();
+        let padding = 100.0 * scale;
+
+        let depths = Self::calculate_depths(&graph.nodes, &graph.edges);
+        let (in_degrees, out_degrees) = Self::calculate_degrees(&graph.nodes, &graph.edges);
+        let centralities = graph.betweenness_centrality();
+        let clusterings = graph.clustering_coefficients();
+        let pageranks = graph.pagerank(0.85, 20);
+        let cycle_nodes: std::collections::HashSet<String> =
+            graph.find_cycle_nodes().into_iter().collect();
+
+        graph
+            .nodes
+            .iter()
+            .map(|node| {
+                let x = rng.gen_range(padding..(self.width as f64 - padding));
+                let y = rng.gen_range(padding..(self.height as f64 - padding));
+
+                let role = Self::node_role(node);
+                let depth = *depths.get(&node.name).unwrap_or(&0);
+                let in_deg = *in_degrees.get(&node.name).unwrap_or(&0);
+                let out_deg = *out_degrees.get(&node.name).unwrap_or(&0);
+                let centrality = *centralities.get(&node.name).unwrap_or(&0.0);
+                let clustering = *clusterings.get(&node.name).unwrap_or(&0.0);
+                let pagerank = *pageranks.get(&node.name).unwrap_or(&0.0);
+                let in_cycle = cycle_nodes.contains(&node.name);
+                let temporal = metrics
+                    .temporal
+                    .nodes
+                    .get(&node.name)
+                    .cloned()
+                    .unwrap_or_default();
+
+                let hash = Self::hash_to_float(&node.name);
+                let color_index = (hash * 1000.0) as usize;
+                let ring_count = if rng.gen_bool(0.5) {
+                    1
+                } else {
+                    rng.gen_range(2..=4)
+                };
+
+                let importance = (centrality + pagerank) / 2.0;
+                let base_radius = 12.0 * scale;
+                let node_radius = base_radius + importance * 22.0 * scale;
+
+                PositionedNode {
+                    name: node.name.clone(),
+                    x,
+                    y,
+                    radius: node_radius,
+                    throughput: node.throughput,
+                    rate: node.rate,
+                    role,
+                    depth,
+                    in_degree: in_deg,
+                    out_degree: out_deg,
+                    color_index,
+                    centrality,
+                    clustering,
+                    pagerank,
+                    in_cycle,
+                    temporal,
+                    ring_count,
+                }
+            })
+            .collect()
+    }
+
+    /// Generate scatter style graph.
+    fn generate_scatter(&self, metrics: &NeuralMetrics, rng: &mut impl Rng) -> String {
+        let positions = self.position_nodes_scatter(metrics, rng);
+        let edges = self.draw_edges(&positions, &metrics.graph.edges, rng);
+        let nodes = self.draw_nodes(&positions);
+        self.wrap_svg(&format!("{}\n{}", edges.join("\n"), nodes.join("\n")))
+    }
+
     /// Wrap content in a simple SVG with solid background.
     fn wrap_svg(&self, content: &str) -> String {
         format!(
@@ -930,6 +1428,11 @@ impl Generator for GraphGenerator {
             GraphStyle::Organic => "graph_organic",
             GraphStyle::Circular => "graph_circular",
             GraphStyle::Hierarchical => "graph_hierarchical",
+            GraphStyle::Grid => "graph_grid",
+            GraphStyle::Spiral => "graph_spiral",
+            GraphStyle::Radial => "graph_radial",
+            GraphStyle::Clustered => "graph_clustered",
+            GraphStyle::Scatter => "graph_scatter",
         }
     }
 
@@ -959,6 +1462,11 @@ impl Generator for GraphGenerator {
             GraphStyle::Organic => self.generate_organic(&metrics, &mut rng),
             GraphStyle::Circular => self.generate_circular(&metrics, &mut rng),
             GraphStyle::Hierarchical => self.generate_hierarchical(&metrics, &mut rng),
+            GraphStyle::Grid => self.generate_grid(&metrics, &mut rng),
+            GraphStyle::Spiral => self.generate_spiral(&metrics, &mut rng),
+            GraphStyle::Radial => self.generate_radial(&metrics, &mut rng),
+            GraphStyle::Clustered => self.generate_clustered(&metrics, &mut rng),
+            GraphStyle::Scatter => self.generate_scatter(&metrics, &mut rng),
         }
     }
 
