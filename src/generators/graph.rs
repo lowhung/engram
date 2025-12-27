@@ -608,9 +608,16 @@ impl GraphGenerator {
                     0.3 + activity * 0.2
                 };
 
+                // Apply edge glow filter for active edges
+                let filter_attr = if activity > 0.3 {
+                    r#" filter="url(#edgeGlow)""#
+                } else {
+                    ""
+                };
+
                 Some(format!(
-                    r#"<path d="M {:.1} {:.1} Q {:.1} {:.1} {:.1} {:.1}" fill="none" stroke="{}" stroke-width="{:.2}" opacity="{:.2}"/>"#,
-                    start_x, start_y, ctrl_x, ctrl_y, end_x, end_y, color, stroke_width, opacity
+                    r#"<path d="M {:.1} {:.1} Q {:.1} {:.1} {:.1} {:.1}" fill="none" stroke="{}" stroke-width="{:.2}" opacity="{:.2}" stroke-linecap="round"{}/>"#,
+                    start_x, start_y, ctrl_x, ctrl_y, end_x, end_y, color, stroke_width, opacity, filter_attr
                 ))
             })
             .collect()
@@ -618,61 +625,46 @@ impl GraphGenerator {
 
     /// Draw nodes as glowing circles with role-based visual hierarchy.
     ///
-    /// Visual distinctions:
-    /// - Sources: Slightly more cyan, outer ring effect
-    /// - Sinks: Slightly more purple-blue, softer glow
-    /// - Processors: Middle hues, balanced glow
-    /// - High-degree nodes: Larger glow radius
-    fn draw_nodes(&self, positions: &[PositionedNode], rng: &mut impl Rng) -> Vec<String> {
+    /// Uses SVG filters for smooth gaussian blur glows and radial gradients
+    /// for natural light falloff. Visual distinctions by role:
+    /// - Sources: Cyan-shifted, outer ring, intense glow
+    /// - Sinks: Purple-shifted, softer glow
+    /// - Processors: Balanced appearance
+    fn draw_nodes(&self, positions: &[PositionedNode], _rng: &mut impl Rng) -> Vec<String> {
         let scale = self.scale();
 
         positions
             .iter()
             .flat_map(|node| {
                 let activity = Self::activity_level(node.throughput, node.rate);
-
-                // Get color based on role and activity using the node's assigned hue
-                let saturation = 0.6 + activity * 0.4;
-                let lightness = 0.3 + activity * 0.3;
-                let color = palette::hsl_to_hex(node.hue, saturation, lightness);
-                let glow_color = palette::glow_color(node.hue);
+                let node_id = node.name.replace(|c: char| !c.is_alphanumeric(), "_");
 
                 let mut elements = Vec::new();
 
                 // Glow radius varies by connectivity (high-degree nodes glow more)
                 let connectivity_factor = 1.0 + ((node.in_degree + node.out_degree) as f64 / 15.0).min(0.5);
 
-                // Outer glow (larger, more transparent) - varies by role
+                // Outer glow using radial gradient (smooth falloff)
                 let glow_multiplier = match node.role {
-                    NodeRole::Source => 2.0,      // Sources radiate outward
-                    NodeRole::Sink => 1.5,        // Sinks have softer glow
-                    NodeRole::Processor => 1.7,   // Processors in between
+                    NodeRole::Source => 2.5,
+                    NodeRole::Sink => 1.8,
+                    NodeRole::Processor => 2.0,
                 };
                 let glow_radius = node.radius * glow_multiplier * connectivity_factor;
-                let glow_opacity = match node.role {
-                    NodeRole::Source => 0.18,
-                    NodeRole::Sink => 0.12,
-                    NodeRole::Processor => 0.15,
+
+                // Use filter for high-activity nodes, simple gradient for others
+                let filter_attr = if activity > 0.5 {
+                    r#" filter="url(#intenseGlow)""#
+                } else {
+                    ""
                 };
+
                 elements.push(format!(
-                    r#"<circle cx="{:.1}" cy="{:.1}" r="{:.1}" fill="{}" opacity="{:.2}"/>"#,
-                    node.x, node.y, glow_radius, glow_color, glow_opacity
+                    r#"<circle cx="{:.1}" cy="{:.1}" r="{:.1}" fill="url(#glowGrad_{})"{}/>"#,
+                    node.x, node.y, glow_radius, node_id, filter_attr
                 ));
 
-                // Mid glow with slight hue shift
-                let mid_glow = node.radius * 1.35;
-                let mid_hue = node.hue + rng.gen_range(-3.0..3.0);
-                let mid_color = palette::hsl_to_hex(
-                    mid_hue.clamp(palette::HUE_MIN, palette::HUE_MAX),
-                    saturation * 0.9,
-                    lightness * 1.1,
-                );
-                elements.push(format!(
-                    r#"<circle cx="{:.1}" cy="{:.1}" r="{:.1}" fill="{}" opacity="0.35"/>"#,
-                    node.x, node.y, mid_glow, mid_color
-                ));
-
-                // Core node with role-specific stroke
+                // Core node with radial gradient fill
                 let stroke_color = match node.role {
                     NodeRole::Source => palette::hsl_to_hex(node.hue - 5.0, 0.8, 0.7),
                     NodeRole::Sink => palette::hsl_to_hex(node.hue + 5.0, 0.7, 0.6),
@@ -684,24 +676,29 @@ impl GraphGenerator {
                     NodeRole::Processor => 1.5 * scale,
                 };
                 elements.push(format!(
-                    r#"<circle cx="{:.1}" cy="{:.1}" r="{:.1}" fill="{}" stroke="{}" stroke-width="{:.1}"/>"#,
-                    node.x, node.y, node.radius, color, stroke_color, stroke_width
+                    r#"<circle cx="{:.1}" cy="{:.1}" r="{:.1}" fill="url(#nodeGrad_{})" stroke="{}" stroke-width="{:.1}" filter="url(#softGlow)"/>"#,
+                    node.x, node.y, node.radius, node_id, stroke_color, stroke_width
                 ));
 
-                // Bright center - intensity based on activity
-                let center_radius = node.radius * (0.3 + activity * 0.2);
-                let center_opacity = 0.6 + activity * 0.3;
+                // Bright center highlight - gives that "lit from within" look
+                let center_radius = node.radius * (0.25 + activity * 0.15);
+                let glow_color = palette::glow_color(node.hue);
+                let center_opacity = 0.5 + activity * 0.4;
                 elements.push(format!(
                     r#"<circle cx="{:.1}" cy="{:.1}" r="{:.1}" fill="{}" opacity="{:.2}"/>"#,
-                    node.x, node.y, center_radius, glow_color, center_opacity
+                    node.x - node.radius * 0.2,
+                    node.y - node.radius * 0.2,
+                    center_radius,
+                    glow_color,
+                    center_opacity
                 ));
 
                 // Sources get an additional outer ring to show they're emitters
                 if node.role == NodeRole::Source {
-                    let ring_radius = node.radius * 1.15;
+                    let ring_radius = node.radius * 1.2;
                     elements.push(format!(
-                        r#"<circle cx="{:.1}" cy="{:.1}" r="{:.1}" fill="none" stroke="{}" stroke-width="{:.1}" opacity="0.4"/>"#,
-                        node.x, node.y, ring_radius, stroke_color, 1.0 * scale
+                        r#"<circle cx="{:.1}" cy="{:.1}" r="{:.1}" fill="none" stroke="{}" stroke-width="{:.1}" opacity="0.5" filter="url(#softGlow)"/>"#,
+                        node.x, node.y, ring_radius, stroke_color, 1.5 * scale
                     ));
                 }
 
@@ -713,35 +710,139 @@ impl GraphGenerator {
     /// Generate organic style graph.
     fn generate_organic(&self, metrics: &NeuralMetrics, rng: &mut impl Rng) -> String {
         let positions = self.position_nodes_organic(metrics, rng);
+        let defs = self.generate_defs(&positions);
         let edges = self.draw_edges(&positions, &metrics.graph.edges, rng);
         let nodes = self.draw_nodes(&positions, rng);
 
-        self.wrap_svg(&format!("{}\n{}", edges.join("\n"), nodes.join("\n")))
+        self.wrap_svg(
+            &defs,
+            &format!("{}\n{}", edges.join("\n"), nodes.join("\n")),
+        )
     }
 
     /// Generate circular style graph.
     fn generate_circular(&self, metrics: &NeuralMetrics, rng: &mut impl Rng) -> String {
         let positions = self.position_nodes_circular(metrics, rng);
+        let defs = self.generate_defs(&positions);
         let edges = self.draw_edges(&positions, &metrics.graph.edges, rng);
         let nodes = self.draw_nodes(&positions, rng);
 
-        self.wrap_svg(&format!("{}\n{}", edges.join("\n"), nodes.join("\n")))
+        self.wrap_svg(
+            &defs,
+            &format!("{}\n{}", edges.join("\n"), nodes.join("\n")),
+        )
     }
 
     /// Generate hierarchical style graph.
     fn generate_hierarchical(&self, metrics: &NeuralMetrics, rng: &mut impl Rng) -> String {
         let positions = self.position_nodes_hierarchical(metrics, rng);
+        let defs = self.generate_defs(&positions);
         let edges = self.draw_edges(&positions, &metrics.graph.edges, rng);
         let nodes = self.draw_nodes(&positions, rng);
 
-        self.wrap_svg(&format!("{}\n{}", edges.join("\n"), nodes.join("\n")))
+        self.wrap_svg(
+            &defs,
+            &format!("{}\n{}", edges.join("\n"), nodes.join("\n")),
+        )
     }
 
-    fn wrap_svg(&self, content: &str) -> String {
+    /// Generate SVG filter definitions for glow effects.
+    fn generate_defs(&self, positions: &[PositionedNode]) -> String {
+        let scale = self.scale();
+        let mut defs = String::from("<defs>\n");
+
+        // Soft glow filter - used for outer node halos
+        let blur_std = 8.0 * scale;
+        defs.push_str(&format!(
+            r#"  <filter id="softGlow" x="-100%" y="-100%" width="300%" height="300%">
+    <feGaussianBlur in="SourceGraphic" stdDeviation="{:.1}" result="blur"/>
+    <feMerge>
+      <feMergeNode in="blur"/>
+      <feMergeNode in="blur"/>
+      <feMergeNode in="SourceGraphic"/>
+    </feMerge>
+  </filter>
+"#,
+            blur_std
+        ));
+
+        // Intense glow for high-activity nodes
+        let intense_blur = 12.0 * scale;
+        defs.push_str(&format!(
+            r#"  <filter id="intenseGlow" x="-150%" y="-150%" width="400%" height="400%">
+    <feGaussianBlur in="SourceGraphic" stdDeviation="{:.1}" result="blur"/>
+    <feMerge>
+      <feMergeNode in="blur"/>
+      <feMergeNode in="blur"/>
+      <feMergeNode in="blur"/>
+      <feMergeNode in="SourceGraphic"/>
+    </feMerge>
+  </filter>
+"#,
+            intense_blur
+        ));
+
+        // Edge glow filter - subtler
+        let edge_blur = 4.0 * scale;
+        defs.push_str(&format!(
+            r#"  <filter id="edgeGlow" x="-50%" y="-50%" width="200%" height="200%">
+    <feGaussianBlur in="SourceGraphic" stdDeviation="{:.1}" result="blur"/>
+    <feMerge>
+      <feMergeNode in="blur"/>
+      <feMergeNode in="SourceGraphic"/>
+    </feMerge>
+  </filter>
+"#,
+            edge_blur
+        ));
+
+        // Generate radial gradients for each node
+        for node in positions {
+            let activity = Self::activity_level(node.throughput, node.rate);
+
+            // Core gradient (bright center fading to node color)
+            let center_lightness = 0.7 + activity * 0.2;
+            let edge_lightness = 0.3 + activity * 0.2;
+            let center_color = palette::hsl_to_hex(node.hue, 0.6, center_lightness);
+            let edge_color = palette::hsl_to_hex(node.hue, 0.7 + activity * 0.3, edge_lightness);
+
+            defs.push_str(&format!(
+                r#"  <radialGradient id="nodeGrad_{}" cx="30%" cy="30%" r="70%" fx="30%" fy="30%">
+    <stop offset="0%" stop-color="{}"/>
+    <stop offset="100%" stop-color="{}"/>
+  </radialGradient>
+"#,
+                node.name.replace(|c: char| !c.is_alphanumeric(), "_"),
+                center_color,
+                edge_color
+            ));
+
+            // Glow gradient (for the outer halo)
+            let glow_color = palette::glow_color(node.hue);
+            defs.push_str(&format!(
+                r#"  <radialGradient id="glowGrad_{}">
+    <stop offset="0%" stop-color="{}" stop-opacity="0.4"/>
+    <stop offset="60%" stop-color="{}" stop-opacity="0.15"/>
+    <stop offset="100%" stop-color="{}" stop-opacity="0"/>
+  </radialGradient>
+"#,
+                node.name.replace(|c: char| !c.is_alphanumeric(), "_"),
+                glow_color,
+                glow_color,
+                glow_color
+            ));
+        }
+
+        defs.push_str("</defs>");
+        defs
+    }
+
+    fn wrap_svg(&self, defs: &str, content: &str) -> String {
         format!(
             r#"<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {} {}" width="{}" height="{}">
   <rect width="100%" height="100%" fill="{}"/>
+  {}
   {}
 </svg>"#,
             self.width,
@@ -749,6 +850,7 @@ impl GraphGenerator {
             self.width,
             self.height,
             palette::BG,
+            defs,
             content
         )
     }
