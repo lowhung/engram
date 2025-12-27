@@ -13,6 +13,15 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 
+/// Health status of a node or edge.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum HealthStatus {
+    #[default]
+    Healthy,
+    Warning,
+    Critical,
+}
+
 /// A node in the adjacency graph with its topic connections.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GraphNode {
@@ -26,6 +35,8 @@ pub struct GraphNode {
     pub rate: Option<f64>,
     /// Total messages processed.
     pub throughput: u64,
+    /// Health status of this node.
+    pub health: HealthStatus,
 }
 
 /// An edge representing a connection between two modules via a topic.
@@ -39,6 +50,12 @@ pub struct GraphEdge {
     pub topic: String,
     /// Message rate on this connection.
     pub rate: Option<f64>,
+    /// Backlog (unread messages) if available.
+    pub backlog: Option<u64>,
+    /// Pending time in microseconds if available.
+    pub pending_us: Option<u64>,
+    /// Health status of this edge.
+    pub health: HealthStatus,
 }
 
 /// The adjacency graph representing module connections.
@@ -83,12 +100,20 @@ impl AdjacencyGraph {
                         .push(n.name.clone());
                 }
 
+                // Convert neuronic HealthStatus to our HealthStatus
+                let health = match n.health {
+                    neuronic::HealthStatus::Healthy => HealthStatus::Healthy,
+                    neuronic::HealthStatus::Warning => HealthStatus::Warning,
+                    neuronic::HealthStatus::Critical => HealthStatus::Critical,
+                };
+
                 GraphNode {
                     name: n.name.clone(),
                     reads: n.read_topics.clone(),
                     writes: n.write_topics.clone(),
                     rate: n.rate(),
                     throughput: n.throughput(),
+                    health,
                 }
             })
             .collect();
@@ -101,18 +126,28 @@ impl AdjacencyGraph {
                     for consumer in topic_consumers {
                         // Skip self-loops
                         if producer != consumer {
-                            // Find rate from the topic edge in the snapshot
-                            let rate = snapshot
-                                .edges
-                                .iter()
-                                .find(|e| &e.topic == topic)
-                                .and_then(|e| e.rate);
+                            // Find the topic edge in the snapshot for rate and health info
+                            let edge_info = snapshot.edges.iter().find(|e| &e.topic == topic);
+
+                            let rate = edge_info.and_then(|e| e.rate);
+                            let backlog = edge_info.and_then(|e| e.backlog);
+                            let pending_us = edge_info.and_then(|e| e.pending_us);
+                            let health = edge_info
+                                .map(|e| match e.health {
+                                    neuronic::HealthStatus::Healthy => HealthStatus::Healthy,
+                                    neuronic::HealthStatus::Warning => HealthStatus::Warning,
+                                    neuronic::HealthStatus::Critical => HealthStatus::Critical,
+                                })
+                                .unwrap_or(HealthStatus::Healthy);
 
                             edges.push(GraphEdge {
                                 source: producer.clone(),
                                 target: consumer.clone(),
                                 topic: topic.clone(),
                                 rate,
+                                backlog,
+                                pending_us,
+                                health,
                             });
                         }
                     }
@@ -496,12 +531,20 @@ impl AdjacencyGraph {
                         .push(name.clone());
                 }
 
+                // Random health status (mostly healthy)
+                let health = match rng.gen_range(0..10) {
+                    0 => HealthStatus::Critical,
+                    1..=2 => HealthStatus::Warning,
+                    _ => HealthStatus::Healthy,
+                };
+
                 GraphNode {
                     name,
                     reads,
                     writes,
                     rate: Some(rng.gen_range(10.0..500.0)),
                     throughput: rng.gen_range(1000..100000),
+                    health,
                 }
             })
             .collect();
@@ -513,11 +556,31 @@ impl AdjacencyGraph {
                 for producer in topic_producers {
                     for consumer in topic_consumers {
                         if producer != consumer {
+                            // Random health and backlog for edges
+                            let health = match rng.gen_range(0..10) {
+                                0 => HealthStatus::Critical,
+                                1..=2 => HealthStatus::Warning,
+                                _ => HealthStatus::Healthy,
+                            };
+                            let backlog = if rng.gen_bool(0.3) {
+                                Some(rng.gen_range(0..500))
+                            } else {
+                                None
+                            };
+                            let pending_us = if rng.gen_bool(0.3) {
+                                Some(rng.gen_range(0..1_000_000))
+                            } else {
+                                None
+                            };
+
                             edges.push(GraphEdge {
                                 source: producer.clone(),
                                 target: consumer.clone(),
                                 topic: topic.clone(),
                                 rate: Some(rng.gen_range(10.0..200.0)),
+                                backlog,
+                                pending_us,
+                                health,
                             });
                         }
                     }

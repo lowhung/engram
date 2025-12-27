@@ -10,7 +10,7 @@
 //! - Randomization adds organic variation while preserving structure
 
 use crate::generators::Generator;
-use crate::metrics::{GraphEdge, GraphNode, NeuralMetrics, NodeTemporalMetrics};
+use crate::metrics::{GraphEdge, GraphNode, HealthStatus, NeuralMetrics, NodeTemporalMetrics};
 use rand::{Rng, SeedableRng};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
@@ -149,6 +149,8 @@ struct PositionedNode {
     pagerank: f64,
     /// Whether this node is part of a cycle/feedback loop
     in_cycle: bool,
+    /// Health status of this node
+    health: HealthStatus,
     /// Temporal metrics from multi-snapshot capture
     temporal: NodeTemporalMetrics,
 }
@@ -388,6 +390,7 @@ impl GraphGenerator {
                     clustering,
                     pagerank,
                     in_cycle,
+                    health: node.health,
                     temporal,
                 }
             })
@@ -559,6 +562,7 @@ impl GraphGenerator {
                     clustering,
                     pagerank,
                     in_cycle,
+                    health: node.health,
                     temporal,
                 }
             })
@@ -701,6 +705,7 @@ impl GraphGenerator {
                     clustering,
                     pagerank,
                     in_cycle,
+                    health: node.health,
                     temporal,
                 });
             }
@@ -775,19 +780,41 @@ impl GraphGenerator {
                 let activity = edge.rate.map(|r| (r / 100.0).min(1.0)).unwrap_or(0.2);
                 let rate = edge.rate.unwrap_or(10.0);
 
-                // Stroke width based on rate and connectivity
+                // Backlog/stress factor - higher backlog = thicker, more stressed appearance
+                let backlog_factor = edge.backlog
+                    .map(|b| (b as f64 / 500.0).min(1.0))
+                    .unwrap_or(0.0);
+                let pending_factor = edge.pending_us
+                    .map(|p| (p as f64 / 1_000_000.0).min(1.0)) // 1 second = max
+                    .unwrap_or(0.0);
+                let stress_factor = (backlog_factor + pending_factor) / 2.0;
+
+                // Stroke width based on rate, connectivity, and stress (backlog)
                 let base_width = 1.5 * scale;
                 let rate_factor = (rate.log10().max(0.0) / 2.0).min(2.0);
                 let degree_factor = ((src.out_degree + tgt.in_degree) as f64 / 10.0).min(1.0);
-                let stroke_width = base_width + (rate_factor * 0.6 + degree_factor * 0.4) * 2.0 * scale;
+                let stress_width_boost = stress_factor * 1.5; // Stressed edges get thicker
+                let stroke_width = base_width + (rate_factor * 0.5 + degree_factor * 0.3 + stress_width_boost * 0.2) * 2.0 * scale;
+
+                // Shift edge color based on health - stressed edges shift toward warm colors
+                let health_hue_shift = match edge.health {
+                    HealthStatus::Healthy => 0.0,
+                    HealthStatus::Warning => -25.0,
+                    HealthStatus::Critical => -50.0,
+                };
+                let health_saturation_boost = match edge.health {
+                    HealthStatus::Healthy => 0.0,
+                    HealthStatus::Warning => 0.1,
+                    HealthStatus::Critical => 0.2,
+                };
 
                 // Source and target colors for gradient
-                let src_saturation = 0.6 + activity * 0.3;
-                let tgt_saturation = 0.6 + activity * 0.3;
+                let src_saturation = 0.6 + activity * 0.3 + health_saturation_boost;
+                let tgt_saturation = 0.6 + activity * 0.3 + health_saturation_boost;
                 let src_lightness = 0.4 + activity * 0.15;
                 let tgt_lightness = 0.4 + activity * 0.15;
-                let src_color = palette::hsl_to_hex(src.hue, src_saturation, src_lightness);
-                let tgt_color = palette::hsl_to_hex(tgt.hue, tgt_saturation, tgt_lightness);
+                let src_color = palette::hsl_to_hex(src.hue + health_hue_shift, src_saturation.min(1.0), src_lightness);
+                let tgt_color = palette::hsl_to_hex(tgt.hue + health_hue_shift, tgt_saturation.min(1.0), tgt_lightness);
 
                 // Create gradient definition for this edge
                 let gradient_id = format!("edgeGrad_{}", edge_idx);
@@ -934,42 +961,94 @@ impl GraphGenerator {
                     0.0
                 };
 
-                // Shift hue toward warm accent for bursting nodes
-                let effective_hue = if node.temporal.has_recent_burst {
-                    palette::accent_blend(node.hue, burst_factor * 0.5)
-                } else {
-                    node.hue
+                // Shift hue based on health status
+                // Warning: shift toward orange/yellow (warmer)
+                // Critical: shift toward red (hot)
+                let health_hue_shift = match node.health {
+                    HealthStatus::Healthy => 0.0,
+                    HealthStatus::Warning => -30.0, // Shift toward orange
+                    HealthStatus::Critical => -60.0, // Shift toward red
                 };
 
-                // Subtle outer halo - much smaller and less intense than before
-                // Only for high-activity or high-centrality nodes
-                if activity > 0.6 || node.centrality > 0.4 {
-                    let halo_radius = node.radius * 1.3;
-                    let halo_opacity = 0.15 + node.centrality * 0.1;
-                    elements.push(format!(
-                        r#"<circle cx="{:.1}" cy="{:.1}" r="{:.1}" fill="url(#glowGrad_{})" opacity="{:.2}"/>"#,
-                        node.x, node.y, halo_radius, node_id, halo_opacity
-                    ));
+                // Shift hue toward warm accent for bursting nodes
+                let effective_hue = if node.temporal.has_recent_burst {
+                    palette::accent_blend(node.hue + health_hue_shift, burst_factor * 0.5)
+                } else {
+                    node.hue + health_hue_shift
+                };
+
+                // Warning/Critical nodes get a colored halo indicating stress
+                match node.health {
+                    HealthStatus::Warning => {
+                        let halo_radius = node.radius * 1.5;
+                        let warning_color = palette::hsl_to_hex(40.0, 0.9, 0.5); // Orange
+                        elements.push(format!(
+                            r#"<circle cx="{:.1}" cy="{:.1}" r="{:.1}" fill="none" stroke="{}" stroke-width="{:.1}" opacity="0.4"/>"#,
+                            node.x, node.y, halo_radius, warning_color, 2.0 * scale
+                        ));
+                    }
+                    HealthStatus::Critical => {
+                        // Critical nodes get pulsing red halo with stress lines
+                        let halo_radius = node.radius * 1.6;
+                        let critical_color = palette::hsl_to_hex(0.0, 0.9, 0.5); // Red
+                        elements.push(format!(
+                            r#"<circle cx="{:.1}" cy="{:.1}" r="{:.1}" fill="none" stroke="{}" stroke-width="{:.1}" opacity="0.5"/>"#,
+                            node.x, node.y, halo_radius, critical_color, 2.5 * scale
+                        ));
+
+                        // Add stress lines radiating outward
+                        let line_count = 6;
+                        let line_length = node.radius * 0.6;
+                        let line_start = node.radius * 1.2;
+                        for i in 0..line_count {
+                            let angle = (i as f64 / line_count as f64) * PI * 2.0;
+                            let x1 = node.x + angle.cos() * line_start;
+                            let y1 = node.y + angle.sin() * line_start;
+                            let x2 = node.x + angle.cos() * (line_start + line_length);
+                            let y2 = node.y + angle.sin() * (line_start + line_length);
+                            elements.push(format!(
+                                r#"<line x1="{:.1}" y1="{:.1}" x2="{:.1}" y2="{:.1}" stroke="{}" stroke-width="{:.1}" opacity="0.4" stroke-linecap="round"/>"#,
+                                x1, y1, x2, y2, critical_color, 1.5 * scale
+                            ));
+                        }
+                    }
+                    HealthStatus::Healthy => {
+                        // Subtle outer halo - only for high-activity or high-centrality nodes
+                        if activity > 0.6 || node.centrality > 0.4 {
+                            let halo_radius = node.radius * 1.3;
+                            let halo_opacity = 0.15 + node.centrality * 0.1;
+                            elements.push(format!(
+                                r#"<circle cx="{:.1}" cy="{:.1}" r="{:.1}" fill="url(#glowGrad_{})" opacity="{:.2}"/>"#,
+                                node.x, node.y, halo_radius, node_id, halo_opacity
+                            ));
+                        }
+                    }
                 }
 
                 // Core node with radial gradient fill - bold and solid
+                // Health affects saturation (warning/critical = more saturated warm colors)
                 let centrality_saturation_boost = node.centrality * 0.1;
                 let burst_saturation_boost = burst_factor * 0.15;
+                let health_saturation_boost = match node.health {
+                    HealthStatus::Healthy => 0.0,
+                    HealthStatus::Warning => 0.1,
+                    HealthStatus::Critical => 0.2,
+                };
 
                 let stroke_color = match node.role {
                     NodeRole::Source => palette::hsl_to_hex(
                         effective_hue - 5.0,
-                        (0.75 + centrality_saturation_boost + burst_saturation_boost).min(1.0),
+                        (0.75 + centrality_saturation_boost + burst_saturation_boost + health_saturation_boost).min(1.0),
                         0.65,
                     ),
                     NodeRole::Sink => palette::hsl_to_hex(
                         effective_hue + 5.0,
-                        (0.7 + centrality_saturation_boost + burst_saturation_boost).min(1.0),
+                        (0.7 + centrality_saturation_boost + burst_saturation_boost + health_saturation_boost).min(1.0),
                         0.55,
                     ),
                     NodeRole::Processor => palette::hsl_to_hex(
                         effective_hue,
-                        (0.72 + centrality_saturation_boost + burst_saturation_boost).min(1.0),
+                        (0.72 + centrality_saturation_boost + burst_saturation_boost + health_saturation_boost).min(1.0),
                         0.60,
                     ),
                 };
