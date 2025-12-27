@@ -2,13 +2,71 @@
 //!
 //! Visualizes the actual module adjacency graph as a dendrite-like
 //! network diagram. Modules are nodes, topics are connections.
+//!
+//! The visual structure reflects the actual graph topology:
+//! - Node roles (source/sink/processor) influence position and appearance
+//! - Edge weights and rates affect curve intensity
+//! - Graph depth and branching factor shape the overall layout
+//! - Randomization adds organic variation while preserving structure
 
 use crate::generators::Generator;
-use crate::metrics::{GraphEdge, NeuralMetrics};
+use crate::metrics::{GraphEdge, GraphNode, NeuralMetrics};
 use rand::{Rng, SeedableRng};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::f64::consts::PI;
+
+/// A rich blue palette with hue variation for organic feel.
+mod palette {
+    /// Background color
+    pub const BG: &str = "#000000";
+
+    /// Blue hue ranges for different elements (HSL hue values, 190-230 range)
+    pub const HUE_MIN: f64 = 190.0; // Cyan-ish
+    pub const HUE_MAX: f64 = 230.0; // Deep blue
+
+    /// Convert HSL to hex color string
+    pub fn hsl_to_hex(h: f64, s: f64, l: f64) -> String {
+        let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
+        let x = c * (1.0 - ((h / 60.0) % 2.0 - 1.0).abs());
+        let m = l - c / 2.0;
+
+        let (r, g, b) = if h < 60.0 {
+            (c, x, 0.0)
+        } else if h < 120.0 {
+            (x, c, 0.0)
+        } else if h < 180.0 {
+            (0.0, c, x)
+        } else if h < 240.0 {
+            (0.0, x, c)
+        } else if h < 300.0 {
+            (x, 0.0, c)
+        } else {
+            (c, 0.0, x)
+        };
+
+        let r = ((r + m) * 255.0) as u8;
+        let g = ((g + m) * 255.0) as u8;
+        let b = ((b + m) * 255.0) as u8;
+
+        format!("#{:02x}{:02x}{:02x}", r, g, b)
+    }
+
+    /// Get a glow color (lighter version of the base)
+    pub fn glow_color(base_hue: f64) -> String {
+        hsl_to_hex(base_hue, 0.8, 0.85)
+    }
+
+    /// Role of a node in the graph topology
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub enum NodeRole {
+        Source,    // Only writes (data producers)
+        Sink,      // Only reads (data consumers)
+        Processor, // Both reads and writes (transformers)
+    }
+}
+
+use palette::NodeRole;
 
 pub struct GraphGenerator {
     pub width: u32,
@@ -24,27 +82,36 @@ pub enum GraphStyle {
     Circular,
     /// Hierarchical top-to-bottom flow
     Hierarchical,
-    /// Constellation-like with clusters
-    Constellation,
 }
 
 impl Default for GraphGenerator {
     fn default() -> Self {
         Self {
-            width: 512,
-            height: 512,
+            width: 2048,
+            height: 2048,
             style: GraphStyle::Organic,
         }
     }
 }
 
-/// A positioned node for rendering.
+/// A positioned node for rendering with topology-aware properties.
 struct PositionedNode {
     name: String,
     x: f64,
     y: f64,
     radius: f64,
     throughput: u64,
+    rate: Option<f64>,
+    /// Role in the graph topology
+    role: NodeRole,
+    /// Depth level in the graph (0 = source, higher = further downstream)
+    depth: u32,
+    /// Number of incoming connections
+    in_degree: usize,
+    /// Number of outgoing connections
+    out_degree: usize,
+    /// Assigned hue for consistent coloring
+    hue: f64,
 }
 
 impl GraphGenerator {
@@ -56,6 +123,11 @@ impl GraphGenerator {
         }
     }
 
+    /// Scale factor for high-res output.
+    fn scale(&self) -> f64 {
+        self.width as f64 / 512.0
+    }
+
     /// Hash a string to a deterministic float in [0, 1).
     fn hash_to_float(s: &str) -> f64 {
         let mut hasher = Sha256::new();
@@ -65,37 +137,158 @@ impl GraphGenerator {
         val as f64 / u32::MAX as f64
     }
 
+    /// Determine the role of a node based on its read/write patterns.
+    fn node_role(node: &GraphNode) -> NodeRole {
+        let has_reads = !node.reads.is_empty();
+        let has_writes = !node.writes.is_empty();
+
+        match (has_reads, has_writes) {
+            (false, true) => NodeRole::Source,
+            (true, false) => NodeRole::Sink,
+            _ => NodeRole::Processor,
+        }
+    }
+
+    /// Calculate the depth of each node in the graph (BFS from sources).
+    fn calculate_depths(nodes: &[GraphNode], edges: &[GraphEdge]) -> HashMap<String, u32> {
+        let mut depths: HashMap<String, u32> = HashMap::new();
+
+        // Find sources (nodes with no incoming edges)
+        let has_incoming: std::collections::HashSet<&str> =
+            edges.iter().map(|e| e.target.as_str()).collect();
+
+        // Initialize sources at depth 0
+        let mut queue: Vec<(String, u32)> = Vec::new();
+        for node in nodes {
+            if !has_incoming.contains(node.name.as_str()) {
+                depths.insert(node.name.clone(), 0);
+                queue.push((node.name.clone(), 0));
+            }
+        }
+
+        // If no sources found, start all nodes at depth 0
+        if queue.is_empty() {
+            for node in nodes {
+                depths.insert(node.name.clone(), 0);
+            }
+            return depths;
+        }
+
+        // BFS to assign depths
+        while let Some((current, current_depth)) = queue.pop() {
+            for edge in edges {
+                if edge.source == current {
+                    let target_depth = current_depth + 1;
+                    let entry = depths.entry(edge.target.clone()).or_insert(target_depth);
+                    if *entry > target_depth {
+                        *entry = target_depth;
+                        queue.push((edge.target.clone(), target_depth));
+                    }
+                }
+            }
+        }
+
+        // Assign remaining unvisited nodes a default depth
+        for node in nodes {
+            depths.entry(node.name.clone()).or_insert(1);
+        }
+
+        depths
+    }
+
+    /// Count incoming and outgoing edges for each node.
+    fn calculate_degrees(
+        nodes: &[GraphNode],
+        edges: &[GraphEdge],
+    ) -> (HashMap<String, usize>, HashMap<String, usize>) {
+        let mut in_degrees: HashMap<String, usize> = HashMap::new();
+        let mut out_degrees: HashMap<String, usize> = HashMap::new();
+
+        for node in nodes {
+            in_degrees.insert(node.name.clone(), 0);
+            out_degrees.insert(node.name.clone(), 0);
+        }
+
+        for edge in edges {
+            *out_degrees.entry(edge.source.clone()).or_insert(0) += 1;
+            *in_degrees.entry(edge.target.clone()).or_insert(0) += 1;
+        }
+
+        (in_degrees, out_degrees)
+    }
+
+    /// Get activity level normalized to 0.0-1.0.
+    fn activity_level(throughput: u64, rate: Option<f64>) -> f64 {
+        let activity = rate.unwrap_or_else(|| (throughput as f64).log10().max(0.0) * 10.0);
+        (activity / 200.0).min(1.0)
+    }
+
     /// Position nodes using a force-directed-like layout.
+    ///
+    /// Uses graph topology to inform initial placement:
+    /// - Nodes are positioned based on depth (sources at top, sinks at bottom)
+    /// - High-degree nodes get more central positions
+    /// - Randomization adds organic variation while preserving structure
     fn position_nodes_organic(
         &self,
         metrics: &NeuralMetrics,
         rng: &mut impl Rng,
     ) -> Vec<PositionedNode> {
         let graph = &metrics.graph;
-        let padding = 60.0;
+        let scale = self.scale();
+        let padding = 120.0 * scale;
         let w = self.width as f64 - padding * 2.0;
         let h = self.height as f64 - padding * 2.0;
 
-        // Initial positions based on name hash + some randomness
+        // Calculate topology information
+        let depths = Self::calculate_depths(&graph.nodes, &graph.edges);
+        let (in_degrees, out_degrees) = Self::calculate_degrees(&graph.nodes, &graph.edges);
+        let max_depth = depths.values().copied().max().unwrap_or(1).max(1);
+
+        // Initial positions based on topology + randomness
         let mut positions: Vec<PositionedNode> = graph
             .nodes
             .iter()
             .map(|node| {
-                let hash = Self::hash_to_float(&node.name);
-                let angle = hash * PI * 2.0;
-                let radius_factor = 0.3 + Self::hash_to_float(&format!("{}_r", node.name)) * 0.5;
+                let role = Self::node_role(node);
+                let depth = *depths.get(&node.name).unwrap_or(&0);
+                let in_deg = *in_degrees.get(&node.name).unwrap_or(&0);
+                let out_deg = *out_degrees.get(&node.name).unwrap_or(&0);
+
+                // Assign a consistent hue based on name hash but with variation
+                let base_hue = palette::HUE_MIN
+                    + Self::hash_to_float(&node.name) * (palette::HUE_MAX - palette::HUE_MIN);
+                let hue = base_hue + rng.gen_range(-5.0..5.0);
 
                 let cx = self.width as f64 / 2.0;
-                let cy = self.height as f64 / 2.0;
+                let _cy = self.height as f64 / 2.0;
 
-                // Start in a rough circular pattern
-                let x = cx + angle.cos() * w * 0.3 * radius_factor + rng.gen_range(-20.0..20.0);
-                let y = cy + angle.sin() * h * 0.3 * radius_factor + rng.gen_range(-20.0..20.0);
+                // Y position influenced by depth (sources higher, sinks lower)
+                let depth_ratio = depth as f64 / max_depth as f64;
+                let base_y = padding + depth_ratio * h * 0.7;
 
-                // Node size based on throughput
-                let base_radius = 8.0;
+                // X position based on hash but clustered by role
+                let hash = Self::hash_to_float(&node.name);
+                let role_offset = match role {
+                    NodeRole::Source => -0.2,
+                    NodeRole::Sink => 0.2,
+                    NodeRole::Processor => 0.0,
+                };
+                let base_x = cx + (hash - 0.5 + role_offset) * w * 0.6;
+
+                // Add jitter for organic feel - more jitter for less connected nodes
+                let connectivity = (in_deg + out_deg) as f64;
+                let jitter_factor = 1.0 / (1.0 + connectivity * 0.2);
+                let jitter = 60.0 * scale * jitter_factor;
+                let x = base_x + rng.gen_range(-jitter..jitter);
+                let y = base_y + rng.gen_range(-jitter..jitter);
+
+                // Node size based on throughput and connectivity
+                let base_radius = 14.0 * scale;
                 let throughput_factor = (node.throughput as f64).log10().max(1.0) / 6.0;
-                let radius = base_radius + throughput_factor * 12.0;
+                let degree_factor = (connectivity / 10.0).min(1.0);
+                let radius =
+                    base_radius + (throughput_factor * 0.7 + degree_factor * 0.3) * 26.0 * scale;
 
                 PositionedNode {
                     name: node.name.clone(),
@@ -103,14 +296,20 @@ impl GraphGenerator {
                     y: y.clamp(padding, self.height as f64 - padding),
                     radius,
                     throughput: node.throughput,
+                    rate: node.rate,
+                    role,
+                    depth,
+                    in_degree: in_deg,
+                    out_degree: out_deg,
+                    hue: hue.clamp(palette::HUE_MIN, palette::HUE_MAX),
                 }
             })
             .collect();
 
         // Simple force-directed iterations
-        let iterations = 50;
-        let repulsion = 5000.0;
-        let attraction = 0.01;
+        let iterations = 80;
+        let repulsion = 80000.0 * scale * scale;
+        let attraction = 0.008;
 
         // Build edge lookup
         let edges: Vec<(usize, usize)> = graph
@@ -172,25 +371,59 @@ impl GraphGenerator {
         positions
     }
 
-    /// Position nodes in a circle.
-    fn position_nodes_circular(&self, metrics: &NeuralMetrics) -> Vec<PositionedNode> {
+    /// Position nodes in a circle, ordered by depth/role for visual flow.
+    fn position_nodes_circular(
+        &self,
+        metrics: &NeuralMetrics,
+        rng: &mut impl Rng,
+    ) -> Vec<PositionedNode> {
         let graph = &metrics.graph;
+        let scale = self.scale();
         let cx = self.width as f64 / 2.0;
         let cy = self.height as f64 / 2.0;
-        let radius = (self.width.min(self.height) as f64 / 2.0) - 80.0;
+        let radius = (self.width.min(self.height) as f64 / 2.0) - 160.0 * scale;
 
-        graph
-            .nodes
+        // Calculate topology
+        let depths = Self::calculate_depths(&graph.nodes, &graph.edges);
+        let (in_degrees, out_degrees) = Self::calculate_degrees(&graph.nodes, &graph.edges);
+
+        // Sort nodes by depth for better visual flow around the circle
+        let mut sorted_nodes: Vec<_> = graph.nodes.iter().collect();
+        sorted_nodes.sort_by_key(|n| depths.get(&n.name).copied().unwrap_or(0));
+
+        sorted_nodes
             .iter()
             .enumerate()
             .map(|(i, node)| {
-                let angle = (i as f64 / graph.nodes.len() as f64) * PI * 2.0 - PI / 2.0;
-                let x = cx + angle.cos() * radius;
-                let y = cy + angle.sin() * radius;
+                let role = Self::node_role(node);
+                let depth = *depths.get(&node.name).unwrap_or(&0);
+                let in_deg = *in_degrees.get(&node.name).unwrap_or(&0);
+                let out_deg = *out_degrees.get(&node.name).unwrap_or(&0);
 
-                let base_radius = 6.0;
+                // Hue with slight variation
+                let base_hue = palette::HUE_MIN
+                    + Self::hash_to_float(&node.name) * (palette::HUE_MAX - palette::HUE_MIN);
+                let hue = base_hue + rng.gen_range(-5.0..5.0);
+
+                let angle = (i as f64 / sorted_nodes.len() as f64) * PI * 2.0 - PI / 2.0;
+
+                // Vary radius slightly based on role - sources slightly outside, sinks inside
+                let radius_offset = match role {
+                    NodeRole::Source => 20.0 * scale,
+                    NodeRole::Sink => -20.0 * scale,
+                    NodeRole::Processor => 0.0,
+                };
+                let node_orbit = radius + radius_offset + rng.gen_range(-10.0..10.0) * scale;
+
+                let x = cx + angle.cos() * node_orbit;
+                let y = cy + angle.sin() * node_orbit;
+
+                let base_radius = 12.0 * scale;
                 let throughput_factor = (node.throughput as f64).log10().max(1.0) / 6.0;
-                let node_radius = base_radius + throughput_factor * 10.0;
+                let connectivity = (in_deg + out_deg) as f64;
+                let degree_factor = (connectivity / 10.0).min(1.0);
+                let node_radius =
+                    base_radius + (throughput_factor * 0.7 + degree_factor * 0.3) * 22.0 * scale;
 
                 PositionedNode {
                     name: node.name.clone(),
@@ -198,42 +431,46 @@ impl GraphGenerator {
                     y,
                     radius: node_radius,
                     throughput: node.throughput,
+                    rate: node.rate,
+                    role,
+                    depth,
+                    in_degree: in_deg,
+                    out_degree: out_deg,
+                    hue: hue.clamp(palette::HUE_MIN, palette::HUE_MAX),
                 }
             })
             .collect()
     }
 
-    /// Position nodes in hierarchical layers.
+    /// Position nodes in hierarchical layers based on actual graph depth.
     fn position_nodes_hierarchical(
         &self,
         metrics: &NeuralMetrics,
-        _rng: &mut impl Rng,
+        rng: &mut impl Rng,
     ) -> Vec<PositionedNode> {
         let graph = &metrics.graph;
+        let scale = self.scale();
 
-        // Simple layering: nodes with no incoming edges are "sources" (top),
-        // nodes with no outgoing edges are "sinks" (bottom), rest in middle
-        let mut layers: Vec<Vec<&str>> = vec![vec![], vec![], vec![]];
+        // Calculate actual depths from graph topology
+        let depths = Self::calculate_depths(&graph.nodes, &graph.edges);
+        let (in_degrees, out_degrees) = Self::calculate_degrees(&graph.nodes, &graph.edges);
+        let max_depth = depths.values().copied().max().unwrap_or(0);
 
+        // Group nodes by depth
+        let mut layers: Vec<Vec<&GraphNode>> = vec![vec![]; (max_depth + 1) as usize];
         for node in &graph.nodes {
-            let has_incoming = graph.edges.iter().any(|e| e.target == node.name);
-            let has_outgoing = graph.edges.iter().any(|e| e.source == node.name);
-
-            match (has_incoming, has_outgoing) {
-                (false, true) => layers[0].push(&node.name), // source
-                (true, false) => layers[2].push(&node.name), // sink
-                _ => layers[1].push(&node.name),             // middle
+            let depth = *depths.get(&node.name).unwrap_or(&0) as usize;
+            if depth < layers.len() {
+                layers[depth].push(node);
             }
         }
 
-        // If a layer is empty, redistribute
-        if layers[0].is_empty() && layers[1].is_empty() {
-            layers[1] = layers[2].clone();
-            layers[2].clear();
-        }
+        // Remove empty layers
+        layers.retain(|l| !l.is_empty());
 
-        let padding = 60.0;
-        let layer_height = (self.height as f64 - padding * 2.0) / 3.0;
+        let padding = 120.0 * scale;
+        let num_layers = layers.len().max(1);
+        let layer_height = (self.height as f64 - padding * 2.0) / num_layers as f64;
 
         let mut positions = Vec::new();
 
@@ -242,23 +479,46 @@ impl GraphGenerator {
                 continue;
             }
 
-            let y = padding + layer_height * (layer_idx as f64 + 0.5);
+            let base_y = padding + layer_height * (layer_idx as f64 + 0.5);
             let spacing = (self.width as f64 - padding * 2.0) / (layer.len() + 1) as f64;
 
-            for (i, name) in layer.iter().enumerate() {
-                let x = padding + spacing * (i + 1) as f64;
+            for (i, node) in layer.iter().enumerate() {
+                let role = Self::node_role(node);
+                let depth = *depths.get(&node.name).unwrap_or(&0);
+                let in_deg = *in_degrees.get(&node.name).unwrap_or(&0);
+                let out_deg = *out_degrees.get(&node.name).unwrap_or(&0);
 
-                let node = graph.nodes.iter().find(|n| &n.name == name).unwrap();
-                let base_radius = 6.0;
+                // Hue with slight variation
+                let base_hue = palette::HUE_MIN
+                    + Self::hash_to_float(&node.name) * (palette::HUE_MAX - palette::HUE_MIN);
+                let hue = base_hue + rng.gen_range(-5.0..5.0);
+
+                let base_x = padding + spacing * (i + 1) as f64;
+
+                // Add slight jitter for organic feel
+                let jitter = 15.0 * scale;
+                let x = base_x + rng.gen_range(-jitter..jitter);
+                let y = base_y + rng.gen_range(-jitter..jitter);
+
+                let base_radius = 12.0 * scale;
                 let throughput_factor = (node.throughput as f64).log10().max(1.0) / 6.0;
-                let node_radius = base_radius + throughput_factor * 10.0;
+                let connectivity = (in_deg + out_deg) as f64;
+                let degree_factor = (connectivity / 10.0).min(1.0);
+                let node_radius =
+                    base_radius + (throughput_factor * 0.7 + degree_factor * 0.3) * 22.0 * scale;
 
                 positions.push(PositionedNode {
-                    name: name.to_string(),
+                    name: node.name.clone(),
                     x,
                     y,
                     radius: node_radius,
                     throughput: node.throughput,
+                    rate: node.rate,
+                    role,
+                    depth,
+                    in_degree: in_deg,
+                    out_degree: out_deg,
+                    hue: hue.clamp(palette::HUE_MIN, palette::HUE_MAX),
                 });
             }
         }
@@ -266,13 +526,19 @@ impl GraphGenerator {
         positions
     }
 
-    /// Draw curved edges between nodes.
+    /// Draw curved edges between nodes with topology-aware styling.
+    ///
+    /// Edge curves are influenced by:
+    /// - Flow direction (top-to-bottom curves more naturally)
+    /// - Rate/activity affects stroke width and opacity
+    /// - Topic hash determines curve direction for consistency
     fn draw_edges(
         &self,
         positions: &[PositionedNode],
         edges: &[GraphEdge],
         rng: &mut impl Rng,
     ) -> Vec<String> {
+        let scale = self.scale();
         let pos_map: HashMap<&str, &PositionedNode> =
             positions.iter().map(|p| (p.name.as_str(), p)).collect();
 
@@ -288,7 +554,7 @@ impl GraphGenerator {
                 let dist = (dx * dx + dy * dy).sqrt();
 
                 // Skip if too close
-                if dist < src.radius + tgt.radius + 5.0 {
+                if dist < src.radius + tgt.radius + 10.0 * scale {
                     return None;
                 }
 
@@ -299,49 +565,147 @@ impl GraphGenerator {
                 let end_x = tgt.x - angle.cos() * tgt.radius;
                 let end_y = tgt.y - angle.sin() * tgt.radius;
 
+                // Curve amount based on topic hash (for consistency) + depth difference
+                let topic_hash = Self::hash_to_float(&edge.topic);
+                let depth_diff = (tgt.depth as i32 - src.depth as i32).abs() as f64;
+
+                // More curve for longer distances and cross-depth connections
+                let base_curve = 30.0 + depth_diff * 15.0;
+                // Direction based on topic hash (deterministic per topic)
+                let curve_direction = if topic_hash > 0.5 { 1.0 } else { -1.0 };
+                // Add randomness but keep it bounded
+                let curve_amount = (base_curve + rng.gen_range(-20.0..20.0)) * curve_direction * scale;
+
                 // Control point for bezier curve (perpendicular offset)
                 let mid_x = (start_x + end_x) / 2.0;
                 let mid_y = (start_y + end_y) / 2.0;
                 let perp_angle = angle + PI / 2.0;
-                let curve_amount = rng.gen_range(-30.0..30.0);
                 let ctrl_x = mid_x + perp_angle.cos() * curve_amount;
                 let ctrl_y = mid_y + perp_angle.sin() * curve_amount;
 
-                // Stroke width based on rate
-                let stroke_width = if let Some(rate) = edge.rate {
-                    0.5 + (rate.log10().max(0.0) / 3.0).min(2.0)
+                // Stroke width based on rate and connectivity
+                let base_width = 1.2 * scale;
+                let rate_factor = edge.rate
+                    .map(|r| (r.log10().max(0.0) / 2.0).min(2.5))
+                    .unwrap_or(0.0);
+                // Thicker lines for high-degree connections
+                let degree_factor = ((src.out_degree + tgt.in_degree) as f64 / 10.0).min(1.0);
+                let stroke_width = base_width + (rate_factor * 0.7 + degree_factor * 0.3) * 2.5 * scale;
+
+                // Color with hue variation - blend source and target hues
+                let edge_hue = (src.hue + tgt.hue) / 2.0 + rng.gen_range(-3.0..3.0);
+                let activity = edge.rate.map(|r| (r / 100.0).min(1.0)).unwrap_or(0.2);
+                let color = palette::hsl_to_hex(
+                    edge_hue.clamp(palette::HUE_MIN, palette::HUE_MAX),
+                    0.5 + activity * 0.3,
+                    0.2 + activity * 0.2,
+                );
+
+                // Opacity based on rate
+                let opacity = if edge.rate.map(|r| r > 20.0).unwrap_or(false) {
+                    0.6 + activity * 0.3
                 } else {
-                    0.75
+                    0.3 + activity * 0.2
                 };
 
                 Some(format!(
-                    r#"<path d="M {:.1} {:.1} Q {:.1} {:.1} {:.1} {:.1}" fill="none" stroke="black" stroke-width="{:.2}" opacity="0.6"/>"#,
-                    start_x, start_y, ctrl_x, ctrl_y, end_x, end_y, stroke_width
+                    r#"<path d="M {:.1} {:.1} Q {:.1} {:.1} {:.1} {:.1}" fill="none" stroke="{}" stroke-width="{:.2}" opacity="{:.2}"/>"#,
+                    start_x, start_y, ctrl_x, ctrl_y, end_x, end_y, color, stroke_width, opacity
                 ))
             })
             .collect()
     }
 
-    /// Draw nodes as circles.
-    fn draw_nodes(&self, positions: &[PositionedNode]) -> Vec<String> {
+    /// Draw nodes as glowing circles with role-based visual hierarchy.
+    ///
+    /// Visual distinctions:
+    /// - Sources: Slightly more cyan, outer ring effect
+    /// - Sinks: Slightly more purple-blue, softer glow
+    /// - Processors: Middle hues, balanced glow
+    /// - High-degree nodes: Larger glow radius
+    fn draw_nodes(&self, positions: &[PositionedNode], rng: &mut impl Rng) -> Vec<String> {
+        let scale = self.scale();
+
         positions
             .iter()
-            .map(|node| {
-                // Outer circle
-                let outer = format!(
-                    r#"<circle cx="{:.1}" cy="{:.1}" r="{:.1}" fill="white" stroke="black" stroke-width="1.5"/>"#,
-                    node.x, node.y, node.radius
-                );
+            .flat_map(|node| {
+                let activity = Self::activity_level(node.throughput, node.rate);
 
-                // Inner fill based on activity (darker = more active)
-                let inner_radius = node.radius * 0.6;
-                let fill_opacity = (node.throughput as f64).log10().max(1.0) / 7.0;
-                let inner = format!(
-                    r#"<circle cx="{:.1}" cy="{:.1}" r="{:.1}" fill="black" opacity="{:.2}"/>"#,
-                    node.x, node.y, inner_radius, fill_opacity.min(0.8)
-                );
+                // Get color based on role and activity using the node's assigned hue
+                let saturation = 0.6 + activity * 0.4;
+                let lightness = 0.3 + activity * 0.3;
+                let color = palette::hsl_to_hex(node.hue, saturation, lightness);
+                let glow_color = palette::glow_color(node.hue);
 
-                format!("{}\n  {}", outer, inner)
+                let mut elements = Vec::new();
+
+                // Glow radius varies by connectivity (high-degree nodes glow more)
+                let connectivity_factor = 1.0 + ((node.in_degree + node.out_degree) as f64 / 15.0).min(0.5);
+
+                // Outer glow (larger, more transparent) - varies by role
+                let glow_multiplier = match node.role {
+                    NodeRole::Source => 2.0,      // Sources radiate outward
+                    NodeRole::Sink => 1.5,        // Sinks have softer glow
+                    NodeRole::Processor => 1.7,   // Processors in between
+                };
+                let glow_radius = node.radius * glow_multiplier * connectivity_factor;
+                let glow_opacity = match node.role {
+                    NodeRole::Source => 0.18,
+                    NodeRole::Sink => 0.12,
+                    NodeRole::Processor => 0.15,
+                };
+                elements.push(format!(
+                    r#"<circle cx="{:.1}" cy="{:.1}" r="{:.1}" fill="{}" opacity="{:.2}"/>"#,
+                    node.x, node.y, glow_radius, glow_color, glow_opacity
+                ));
+
+                // Mid glow with slight hue shift
+                let mid_glow = node.radius * 1.35;
+                let mid_hue = node.hue + rng.gen_range(-3.0..3.0);
+                let mid_color = palette::hsl_to_hex(
+                    mid_hue.clamp(palette::HUE_MIN, palette::HUE_MAX),
+                    saturation * 0.9,
+                    lightness * 1.1,
+                );
+                elements.push(format!(
+                    r#"<circle cx="{:.1}" cy="{:.1}" r="{:.1}" fill="{}" opacity="0.35"/>"#,
+                    node.x, node.y, mid_glow, mid_color
+                ));
+
+                // Core node with role-specific stroke
+                let stroke_color = match node.role {
+                    NodeRole::Source => palette::hsl_to_hex(node.hue - 5.0, 0.8, 0.7),
+                    NodeRole::Sink => palette::hsl_to_hex(node.hue + 5.0, 0.7, 0.6),
+                    NodeRole::Processor => palette::hsl_to_hex(node.hue, 0.75, 0.65),
+                };
+                let stroke_width = match node.role {
+                    NodeRole::Source => 2.0 * scale,
+                    NodeRole::Sink => 1.0 * scale,
+                    NodeRole::Processor => 1.5 * scale,
+                };
+                elements.push(format!(
+                    r#"<circle cx="{:.1}" cy="{:.1}" r="{:.1}" fill="{}" stroke="{}" stroke-width="{:.1}"/>"#,
+                    node.x, node.y, node.radius, color, stroke_color, stroke_width
+                ));
+
+                // Bright center - intensity based on activity
+                let center_radius = node.radius * (0.3 + activity * 0.2);
+                let center_opacity = 0.6 + activity * 0.3;
+                elements.push(format!(
+                    r#"<circle cx="{:.1}" cy="{:.1}" r="{:.1}" fill="{}" opacity="{:.2}"/>"#,
+                    node.x, node.y, center_radius, glow_color, center_opacity
+                ));
+
+                // Sources get an additional outer ring to show they're emitters
+                if node.role == NodeRole::Source {
+                    let ring_radius = node.radius * 1.15;
+                    elements.push(format!(
+                        r#"<circle cx="{:.1}" cy="{:.1}" r="{:.1}" fill="none" stroke="{}" stroke-width="{:.1}" opacity="0.4"/>"#,
+                        node.x, node.y, ring_radius, stroke_color, 1.0 * scale
+                    ));
+                }
+
+                elements
             })
             .collect()
     }
@@ -350,16 +714,16 @@ impl GraphGenerator {
     fn generate_organic(&self, metrics: &NeuralMetrics, rng: &mut impl Rng) -> String {
         let positions = self.position_nodes_organic(metrics, rng);
         let edges = self.draw_edges(&positions, &metrics.graph.edges, rng);
-        let nodes = self.draw_nodes(&positions);
+        let nodes = self.draw_nodes(&positions, rng);
 
         self.wrap_svg(&format!("{}\n{}", edges.join("\n"), nodes.join("\n")))
     }
 
     /// Generate circular style graph.
     fn generate_circular(&self, metrics: &NeuralMetrics, rng: &mut impl Rng) -> String {
-        let positions = self.position_nodes_circular(metrics);
+        let positions = self.position_nodes_circular(metrics, rng);
         let edges = self.draw_edges(&positions, &metrics.graph.edges, rng);
-        let nodes = self.draw_nodes(&positions);
+        let nodes = self.draw_nodes(&positions, rng);
 
         self.wrap_svg(&format!("{}\n{}", edges.join("\n"), nodes.join("\n")))
     }
@@ -368,66 +732,7 @@ impl GraphGenerator {
     fn generate_hierarchical(&self, metrics: &NeuralMetrics, rng: &mut impl Rng) -> String {
         let positions = self.position_nodes_hierarchical(metrics, rng);
         let edges = self.draw_edges(&positions, &metrics.graph.edges, rng);
-        let nodes = self.draw_nodes(&positions);
-
-        self.wrap_svg(&format!("{}\n{}", edges.join("\n"), nodes.join("\n")))
-    }
-
-    /// Generate constellation style with organic clusters.
-    fn generate_constellation(&self, metrics: &NeuralMetrics, rng: &mut impl Rng) -> String {
-        let positions = self.position_nodes_organic(metrics, rng);
-
-        // Draw edges as thin lines with dots
-        let edges: Vec<String> = metrics
-            .graph
-            .edges
-            .iter()
-            .filter_map(|edge| {
-                let src = positions.iter().find(|p| p.name == edge.source)?;
-                let tgt = positions.iter().find(|p| p.name == edge.target)?;
-
-                let dx = tgt.x - src.x;
-                let dy = tgt.y - src.y;
-                let dist = (dx * dx + dy * dy).sqrt();
-
-                if dist < src.radius + tgt.radius + 5.0 {
-                    return None;
-                }
-
-                let angle = dy.atan2(dx);
-                let start_x = src.x + angle.cos() * src.radius;
-                let start_y = src.y + angle.sin() * src.radius;
-                let end_x = tgt.x - angle.cos() * tgt.radius;
-                let end_y = tgt.y - angle.sin() * tgt.radius;
-
-                // Dotted line effect
-                Some(format!(
-                    r#"<line x1="{:.1}" y1="{:.1}" x2="{:.1}" y2="{:.1}" stroke="black" stroke-width="0.5" stroke-dasharray="2,3" opacity="0.5"/>"#,
-                    start_x, start_y, end_x, end_y
-                ))
-            })
-            .collect();
-
-        // Draw nodes as stars/points
-        let nodes: Vec<String> = positions
-            .iter()
-            .map(|node| {
-                let r = node.radius;
-
-                // Multi-pointed star effect
-                let points: Vec<String> = (0..8)
-                    .map(|i| {
-                        let angle = (i as f64 / 8.0) * PI * 2.0;
-                        let point_r = if i % 2 == 0 { r } else { r * 0.4 };
-                        let x = node.x + angle.cos() * point_r;
-                        let y = node.y + angle.sin() * point_r;
-                        format!("{:.1},{:.1}", x, y)
-                    })
-                    .collect();
-
-                format!(r#"<polygon points="{}" fill="black"/>"#, points.join(" "))
-            })
-            .collect();
+        let nodes = self.draw_nodes(&positions, rng);
 
         self.wrap_svg(&format!("{}\n{}", edges.join("\n"), nodes.join("\n")))
     }
@@ -436,10 +741,15 @@ impl GraphGenerator {
         format!(
             r#"<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {} {}" width="{}" height="{}">
-  <rect width="100%" height="100%" fill="white"/>
+  <rect width="100%" height="100%" fill="{}"/>
   {}
 </svg>"#,
-            self.width, self.height, self.width, self.height, content
+            self.width,
+            self.height,
+            self.width,
+            self.height,
+            palette::BG,
+            content
         )
     }
 }
@@ -450,7 +760,6 @@ impl Generator for GraphGenerator {
             GraphStyle::Organic => "graph_organic",
             GraphStyle::Circular => "graph_circular",
             GraphStyle::Hierarchical => "graph_hierarchical",
-            GraphStyle::Constellation => "graph_constellation",
         }
     }
 
@@ -463,7 +772,6 @@ impl Generator for GraphGenerator {
             GraphStyle::Organic => self.generate_organic(metrics, &mut rng),
             GraphStyle::Circular => self.generate_circular(metrics, &mut rng),
             GraphStyle::Hierarchical => self.generate_hierarchical(metrics, &mut rng),
-            GraphStyle::Constellation => self.generate_constellation(metrics, &mut rng),
         }
     }
 

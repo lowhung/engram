@@ -120,8 +120,6 @@ enum GraphStyleArg {
     Circular,
     /// Top-to-bottom flow layout
     Hierarchical,
-    /// Star-like constellation pattern
-    Constellation,
 }
 
 impl GraphStyleArg {
@@ -130,7 +128,6 @@ impl GraphStyleArg {
             GraphStyleArg::Organic => GraphStyle::Organic,
             GraphStyleArg::Circular => GraphStyle::Circular,
             GraphStyleArg::Hierarchical => GraphStyle::Hierarchical,
-            GraphStyleArg::Constellation => GraphStyle::Constellation,
         }
     }
 
@@ -139,7 +136,6 @@ impl GraphStyleArg {
             GraphStyleArg::Organic => "organic",
             GraphStyleArg::Circular => "circular",
             GraphStyleArg::Hierarchical => "hierarchical",
-            GraphStyleArg::Constellation => "constellation",
         }
     }
 
@@ -148,7 +144,6 @@ impl GraphStyleArg {
             GraphStyleArg::Organic,
             GraphStyleArg::Circular,
             GraphStyleArg::Hierarchical,
-            GraphStyleArg::Constellation,
         ]
     }
 }
@@ -281,15 +276,10 @@ async fn main() -> Result<()> {
         }
 
         Commands::Showcase {
-            output_dir,
-            seed,
-            width,
-            height,
+            output_dir, seed, ..
         } => {
             let output_dir = output_dir
                 .unwrap_or_else(|| PathBuf::from(&config.output.directory).join("showcase"));
-            let width = width.unwrap_or(config.output.width);
-            let height = height.unwrap_or(config.output.height);
 
             fs::create_dir_all(&output_dir)?;
 
@@ -301,14 +291,19 @@ async fn main() -> Result<()> {
                 metrics.graph.edges.len()
             );
 
-            for style in GraphStyleArg::all() {
-                let gen = GraphGenerator::new(width, height, style.to_style());
-                let result = gen.generate(&metrics);
+            // Generate multiple sizes
+            let sizes: [(u32, &str); 4] = [(774, "774"), (2048, "2k"), (4096, "4k"), (8192, "8k")];
 
-                let filename = format!("{}.svg", style.name());
-                let path = output_dir.join(&filename);
-                fs::write(&path, &result)?;
-                println!("  Created {}", filename);
+            for style in GraphStyleArg::all() {
+                for (size, label) in &sizes {
+                    let gen = GraphGenerator::new(*size, *size, style.to_style());
+                    let result = gen.generate(&metrics);
+
+                    let filename = format!("{}_{}.svg", style.name(), label);
+                    let path = output_dir.join(&filename);
+                    fs::write(&path, &result)?;
+                    println!("  Created {}", filename);
+                }
             }
 
             println!("Done! Showcase saved to {}", output_dir.display());

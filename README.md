@@ -18,9 +18,17 @@ engram showcase
 ## Styles
 
 - **organic** - Force-directed layout with curved edges
-- **circular** - Modules arranged on a ring
+- **circular** - Modules arranged on a ring, ordered by depth
 - **hierarchical** - Top-to-bottom flow (sources → sinks)
-- **constellation** - Star-like nodes with dotted connections
+
+## Visual Features
+
+The generated art reflects actual graph topology:
+
+- **Node roles** - Sources (data producers) have cyan-shifted hues and outer rings; sinks (consumers) have purple-shifted hues; processors show balanced colors
+- **Topology-aware positioning** - Nodes positioned by graph depth (sources at top, sinks at bottom) with connectivity influencing centrality
+- **Dynamic coloring** - HSL-based blue palette (190-230 hue range) with per-node variation
+- **Edge curves** - Curvature based on topic identity and depth difference; stroke width reflects message rate
 
 ## Configuration
 

@@ -20,8 +20,8 @@ ignored_topics = ["cardano.query."]
 # Output settings
 [output]
 directory = "output"
-width = 512
-height = 512
+width = 774
+height = 774
 save_metrics = false
 
 # Generator settings
