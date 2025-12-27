@@ -637,7 +637,7 @@ impl GraphGenerator {
                 // More dramatic saturation variation based on activity
                 let saturation = 0.4 + activity * 0.5; // 40-90%
                 let lightness = 0.25 + activity * 0.25; // 25-50%
-                let color = palette::hsl_to_hex(edge_hue, saturation, lightness);
+                let _base_color = palette::hsl_to_hex(edge_hue, saturation, lightness);
 
                 // Opacity based on rate
                 let opacity = if edge.rate.map(|r| r > 20.0).unwrap_or(false) {
@@ -646,17 +646,46 @@ impl GraphGenerator {
                     0.3 + activity * 0.2
                 };
 
-                // Apply edge glow filter for active edges
-                let filter_attr = if activity > 0.3 {
-                    r#" filter="url(#edgeGlow)""#
-                } else {
-                    ""
-                };
+                // Generate multiple fiber strokes for active edges
+                let fiber_count = if activity > 0.5 { 3 } else if activity > 0.2 { 2 } else { 1 };
 
-                Some(format!(
-                    r#"<path d="M {:.1} {:.1} Q {:.1} {:.1} {:.1} {:.1}" fill="none" stroke="{}" stroke-width="{:.2}" opacity="{:.2}" stroke-linecap="round"{}/>"#,
-                    start_x, start_y, ctrl_x, ctrl_y, end_x, end_y, color, stroke_width, opacity, filter_attr
-                ))
+                let mut paths = Vec::new();
+
+                for i in 0..fiber_count {
+                    // Offset each fiber slightly perpendicular to the path
+                    let fiber_offset = if fiber_count > 1 {
+                        let spread = stroke_width * 0.8;
+                        let offset_ratio = (i as f64 - (fiber_count - 1) as f64 / 2.0) / (fiber_count as f64);
+                        offset_ratio * spread
+                    } else {
+                        0.0
+                    };
+
+                    // Apply offset to control point
+                    let fiber_ctrl_x = ctrl_x + perp_angle.cos() * fiber_offset;
+                    let fiber_ctrl_y = ctrl_y + perp_angle.sin() * fiber_offset;
+
+                    // Individual fiber width (thinner than total)
+                    let fiber_width = if fiber_count > 1 {
+                        stroke_width / fiber_count as f64 * 1.2
+                    } else {
+                        stroke_width
+                    };
+
+                    // Slight opacity variation per fiber
+                    let fiber_opacity = opacity * (0.8 + 0.2 * (i as f64 / fiber_count as f64));
+
+                    // Slight hue shift per fiber for visual interest
+                    let fiber_hue = edge_hue + (i as f64 - fiber_count as f64 / 2.0) * 3.0;
+                    let fiber_color = palette::hsl_to_hex(fiber_hue, saturation, lightness);
+
+                    paths.push(format!(
+                        r#"<path d="M {:.1} {:.1} Q {:.1} {:.1} {:.1} {:.1}" fill="none" stroke="{}" stroke-width="{:.2}" opacity="{:.2}" stroke-linecap="round"/>"#,
+                        start_x, start_y, fiber_ctrl_x, fiber_ctrl_y, end_x, end_y, fiber_color, fiber_width, fiber_opacity
+                    ));
+                }
+
+                Some(paths.join("\n"))
             })
             .collect()
     }
