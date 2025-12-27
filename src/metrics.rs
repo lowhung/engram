@@ -448,39 +448,54 @@ impl AdjacencyGraph {
     }
 
     /// Generate sample adjacency graph for testing.
+    ///
+    /// Creates multiple clusters of nodes with limited cross-cluster connections,
+    /// more closely resembling real distributed systems.
     pub fn sample(seed: u64) -> Self {
+        use rand::seq::SliceRandom;
         use rand::{Rng, SeedableRng};
         let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
 
-        let node_count = rng.gen_range(5..15);
-        let topic_count = rng.gen_range(3..10);
-
-        // Generate topic names
-        let topics: Vec<String> = (0..topic_count).map(|i| format!("topic.{}", i)).collect();
-
-        // Generate nodes with random topic subscriptions
+        // Generate 2-4 clusters
+        let cluster_count = rng.gen_range(2..=4);
+        let mut all_nodes: Vec<GraphNode> = Vec::new();
         let mut producers: HashMap<String, Vec<String>> = HashMap::new();
         let mut consumers: HashMap<String, Vec<String>> = HashMap::new();
 
-        let nodes: Vec<GraphNode> = (0..node_count)
-            .map(|i| {
-                let name = format!("module_{}", i);
+        for cluster_idx in 0..cluster_count {
+            // Each cluster has 3-8 nodes
+            let cluster_size = rng.gen_range(3..=8);
+            // Each cluster has 2-4 topics to ensure good connectivity
+            let cluster_topic_count = rng.gen_range(2..=4);
+            let cluster_topics: Vec<String> = (0..cluster_topic_count)
+                .map(|i| format!("cluster{}.topic{}", cluster_idx, i))
+                .collect();
 
-                // Each node writes to 1-3 topics
-                let write_count = rng.gen_range(1..=3.min(topic_count));
-                let writes: Vec<String> = (0..write_count)
-                    .map(|_| topics[rng.gen_range(0..topic_count)].clone())
-                    .collect::<HashSet<_>>()
-                    .into_iter()
+            for node_idx in 0..cluster_size {
+                let name = format!("c{}_{}", cluster_idx, node_idx);
+
+                // Each node writes to exactly 1 topic
+                let write_topic_idx = rng.gen_range(0..cluster_topics.len());
+                let write_topic = cluster_topics[write_topic_idx].clone();
+                let writes = vec![write_topic.clone()];
+
+                // Each node reads from at least 1 topic (different from write topic)
+                // This ensures every node is connected
+                let available_read_topics: Vec<&String> = cluster_topics
+                    .iter()
+                    .filter(|t| *t != &write_topic)
                     .collect();
 
-                // Each node reads from 1-3 topics
-                let read_count = rng.gen_range(1..=3.min(topic_count));
-                let reads: Vec<String> = (0..read_count)
-                    .map(|_| topics[rng.gen_range(0..topic_count)].clone())
-                    .collect::<HashSet<_>>()
-                    .into_iter()
-                    .collect();
+                let reads: Vec<String> = if !available_read_topics.is_empty() {
+                    // Pick 1-2 topics to read from
+                    let read_count = rng.gen_range(1..=2.min(available_read_topics.len()));
+                    available_read_topics
+                        .choose_multiple(&mut rng, read_count)
+                        .map(|t| (*t).clone())
+                        .collect()
+                } else {
+                    vec![]
+                };
 
                 // Register relationships
                 for topic in &writes {
@@ -496,37 +511,80 @@ impl AdjacencyGraph {
                         .push(name.clone());
                 }
 
-                GraphNode {
+                all_nodes.push(GraphNode {
                     name,
                     reads,
                     writes,
                     rate: Some(rng.gen_range(10.0..500.0)),
                     throughput: rng.gen_range(1000..100000),
-                }
-            })
-            .collect();
+                });
+            }
+        }
 
-        // Build edges
-        let mut edges = Vec::new();
+        // Optionally add a few cross-cluster connections (bridges)
+        // These are rare - maybe 0-2 bridge topics
+        let bridge_count = rng.gen_range(0..=2);
+        for bridge_idx in 0..bridge_count {
+            let bridge_topic = format!("bridge.{}", bridge_idx);
+
+            // Pick a random node to be the bridge producer
+            if !all_nodes.is_empty() {
+                let producer_idx = rng.gen_range(0..all_nodes.len());
+                let producer_name = all_nodes[producer_idx].name.clone();
+                all_nodes[producer_idx].writes.push(bridge_topic.clone());
+                producers
+                    .entry(bridge_topic.clone())
+                    .or_default()
+                    .push(producer_name);
+
+                // Pick 1-2 random nodes from different clusters to consume
+                let consumer_count = rng.gen_range(1..=2);
+                for _ in 0..consumer_count {
+                    let consumer_idx = rng.gen_range(0..all_nodes.len());
+                    if consumer_idx != producer_idx {
+                        let consumer_name = all_nodes[consumer_idx].name.clone();
+                        all_nodes[consumer_idx].reads.push(bridge_topic.clone());
+                        consumers
+                            .entry(bridge_topic.clone())
+                            .or_default()
+                            .push(consumer_name);
+                    }
+                }
+            }
+        }
+
+        // Build edges - deduplicate by (source, target) pair
+        let mut edge_map: HashMap<(String, String), GraphEdge> = HashMap::new();
         for (topic, topic_producers) in &producers {
             if let Some(topic_consumers) = consumers.get(topic) {
                 for producer in topic_producers {
                     for consumer in topic_consumers {
                         if producer != consumer {
-                            edges.push(GraphEdge {
-                                source: producer.clone(),
-                                target: consumer.clone(),
-                                topic: topic.clone(),
-                                rate: Some(rng.gen_range(10.0..200.0)),
-                            });
+                            let key = (producer.clone(), consumer.clone());
+                            let rate = rng.gen_range(10.0..200.0);
+
+                            edge_map
+                                .entry(key)
+                                .and_modify(|e| {
+                                    // Combine rates if edge already exists
+                                    e.rate = Some(e.rate.unwrap_or(0.0) + rate);
+                                })
+                                .or_insert(GraphEdge {
+                                    source: producer.clone(),
+                                    target: consumer.clone(),
+                                    topic: topic.clone(),
+                                    rate: Some(rate),
+                                });
                         }
                     }
                 }
             }
         }
 
+        let edges: Vec<GraphEdge> = edge_map.into_values().collect();
+
         Self {
-            nodes,
+            nodes: all_nodes,
             edges,
             producers,
             consumers,
