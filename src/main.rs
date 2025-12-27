@@ -132,7 +132,7 @@ enum Commands {
     },
 }
 
-#[derive(Clone, ValueEnum, Debug)]
+#[derive(Clone, ValueEnum, Debug, PartialEq)]
 enum GraphStyleArg {
     /// Force-directed organic layout
     Organic,
@@ -317,8 +317,17 @@ async fn main() -> Result<()> {
                     ..Default::default()
                 };
 
-                let styles = GraphStyleArg::all();
+                // If style is explicitly set (not default), lock to that style
+                // Otherwise rotate through all styles
+                let all_styles = GraphStyleArg::all();
+                let lock_style = style != GraphStyleArg::Organic; // Organic is default
                 let mut image_count = 0u64;
+
+                if lock_style {
+                    println!("  Style: {} (locked)", style.name());
+                } else {
+                    println!("  Style: rotating through all");
+                }
 
                 loop {
                     // Capture a batch of snapshots
@@ -351,8 +360,12 @@ async fn main() -> Result<()> {
                     let aggregated = AggregatedMetrics::from_snapshots(&snapshots);
                     let metrics = NeuralMetrics::from_aggregated(&aggregated, &snapshots);
 
-                    // Automatically rotate through styles
-                    let current_style = &styles[image_count as usize % styles.len()];
+                    // Use locked style or rotate through all
+                    let current_style = if lock_style {
+                        &style
+                    } else {
+                        &all_styles[image_count as usize % all_styles.len()]
+                    };
 
                     // Random seed for each image
                     let seed: u64 = rand::random();
