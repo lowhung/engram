@@ -917,11 +917,14 @@ impl GraphGenerator {
         let canvas_cy = self.height as f64 / 2.0;
 
         // Transform all positions
+        // Cap radius scaling to avoid nodes becoming too large and overlapping
+        let radius_scale = fit_scale.min(2.0);
+
         for node in &mut positions {
             // Scale around content center, then translate to canvas center
             node.x = (node.x - content_cx) * fit_scale + canvas_cx;
             node.y = (node.y - content_cy) * fit_scale + canvas_cy;
-            node.radius *= fit_scale;
+            node.radius *= radius_scale;
         }
 
         positions
