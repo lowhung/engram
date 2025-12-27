@@ -119,35 +119,35 @@ pub mod palette {
         }
     }
 
-    // Catppuccin Latte palette
-    pub const ROSEWATER: &str = "#dc8a78";
-    pub const FLAMINGO: &str = "#dd7878";
-    pub const PINK: &str = "#ea76cb";
-    pub const MAUVE: &str = "#8839ef";
-    pub const RED: &str = "#d20f39";
-    pub const MAROON: &str = "#e64553";
-    pub const PEACH: &str = "#fe640b";
-    pub const YELLOW: &str = "#df8e1d";
-    pub const GREEN: &str = "#40a02b";
-    pub const TEAL: &str = "#179299";
-    pub const SKY: &str = "#04a5e5";
-    pub const SAPPHIRE: &str = "#209fb5";
-    pub const BLUE: &str = "#1e66f5";
-    pub const LAVENDER: &str = "#7287fd";
+    // Catppuccin Mocha palette (dark variant)
+    pub const ROSEWATER: &str = "#f5e0dc";
+    pub const FLAMINGO: &str = "#f2cdcd";
+    pub const PINK: &str = "#f5c2e7";
+    pub const MAUVE: &str = "#cba6f7";
+    pub const RED: &str = "#f38ba8";
+    pub const MAROON: &str = "#eba0ac";
+    pub const PEACH: &str = "#fab387";
+    pub const YELLOW: &str = "#f9e2af";
+    pub const GREEN: &str = "#a6e3a1";
+    pub const TEAL: &str = "#94e2d5";
+    pub const SKY: &str = "#89dceb";
+    pub const SAPPHIRE: &str = "#74c7ec";
+    pub const BLUE: &str = "#89b4fa";
+    pub const LAVENDER: &str = "#b4befe";
 
-    // Catppuccin Latte neutrals
-    pub const TEXT: &str = "#4c4f69";
-    pub const SUBTEXT1: &str = "#5c5f77";
-    pub const SUBTEXT0: &str = "#6c6f85";
-    pub const OVERLAY2: &str = "#7c7f93";
-    pub const OVERLAY1: &str = "#8c8fa1";
-    pub const OVERLAY0: &str = "#9ca0b0";
-    pub const SURFACE2: &str = "#acb0be";
-    pub const SURFACE1: &str = "#bcc0cc";
-    pub const SURFACE0: &str = "#ccd0da";
-    pub const BASE: &str = "#eff1f5";
-    pub const MANTLE: &str = "#e6e9ef";
-    pub const CRUST: &str = "#dce0e8";
+    // Catppuccin Mocha neutrals
+    pub const TEXT: &str = "#cdd6f4";
+    pub const SUBTEXT1: &str = "#bac2de";
+    pub const SUBTEXT0: &str = "#a6adc8";
+    pub const OVERLAY2: &str = "#9399b2";
+    pub const OVERLAY1: &str = "#7f849c";
+    pub const OVERLAY0: &str = "#6c7086";
+    pub const SURFACE2: &str = "#585b70";
+    pub const SURFACE1: &str = "#45475a";
+    pub const SURFACE0: &str = "#313244";
+    pub const BASE: &str = "#1e1e2e";
+    pub const MANTLE: &str = "#181825";
+    pub const CRUST: &str = "#11111b";
 
     /// Role of a node in the graph topology
     #[derive(Debug, Clone, Copy, PartialEq)]
