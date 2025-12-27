@@ -247,6 +247,149 @@ impl AdjacencyGraph {
         centrality
     }
 
+    /// Calculate PageRank-style importance scores for all nodes.
+    ///
+    /// PageRank measures importance based on incoming connections from
+    /// other important nodes. Nodes that receive many connections from
+    /// highly-ranked nodes get higher scores.
+    ///
+    /// Returns a map from node name to PageRank score (normalized 0.0 to 1.0).
+    pub fn pagerank(&self, damping: f64, iterations: usize) -> HashMap<String, f64> {
+        let n = self.nodes.len();
+        if n == 0 {
+            return HashMap::new();
+        }
+
+        // Initialize all nodes with equal rank
+        let initial_rank = 1.0 / n as f64;
+        let mut ranks: HashMap<String, f64> = self
+            .nodes
+            .iter()
+            .map(|node| (node.name.clone(), initial_rank))
+            .collect();
+
+        // Build outgoing edge counts for each node
+        let mut out_degrees: HashMap<&str, usize> = HashMap::new();
+        for node in &self.nodes {
+            out_degrees.insert(&node.name, 0);
+        }
+        for edge in &self.edges {
+            *out_degrees.entry(&edge.source).or_insert(0) += 1;
+        }
+
+        // Iterative PageRank calculation
+        for _ in 0..iterations {
+            let mut new_ranks: HashMap<String, f64> = HashMap::new();
+
+            // Base rank from damping factor (random jump probability)
+            let base_rank = (1.0 - damping) / n as f64;
+
+            for node in &self.nodes {
+                let mut incoming_rank = 0.0;
+
+                // Sum contributions from all incoming edges
+                for edge in &self.edges {
+                    if edge.target == node.name {
+                        let source_rank = ranks.get(&edge.source).copied().unwrap_or(0.0);
+                        let source_out_degree =
+                            *out_degrees.get(edge.source.as_str()).unwrap_or(&1);
+                        incoming_rank += source_rank / source_out_degree as f64;
+                    }
+                }
+
+                new_ranks.insert(node.name.clone(), base_rank + damping * incoming_rank);
+            }
+
+            ranks = new_ranks;
+        }
+
+        // Normalize to 0.0-1.0 range
+        let max_rank = ranks.values().cloned().fold(0.0f64, f64::max);
+        if max_rank > 0.0 {
+            for rank in ranks.values_mut() {
+                *rank /= max_rank;
+            }
+        }
+
+        ranks
+    }
+
+    /// Detect cycles in the graph using DFS.
+    ///
+    /// Returns a list of nodes that participate in at least one cycle.
+    /// Nodes in cycles may represent feedback loops in the system.
+    pub fn find_cycle_nodes(&self) -> Vec<String> {
+        let node_names: Vec<&str> = self.nodes.iter().map(|n| n.name.as_str()).collect();
+
+        // Build adjacency list
+        let mut adj: HashMap<&str, Vec<&str>> = HashMap::new();
+        for name in &node_names {
+            adj.insert(name, Vec::new());
+        }
+        for edge in &self.edges {
+            adj.entry(edge.source.as_str())
+                .or_default()
+                .push(edge.target.as_str());
+        }
+
+        let mut cycle_nodes: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+        // For each node, do DFS to find if it can reach itself
+        for &start in &node_names {
+            let mut visited: HashMap<&str, bool> = HashMap::new();
+            let mut rec_stack: HashMap<&str, bool> = HashMap::new();
+            let mut path: Vec<&str> = Vec::new();
+
+            self.dfs_find_cycles(
+                start,
+                &adj,
+                &mut visited,
+                &mut rec_stack,
+                &mut path,
+                &mut cycle_nodes,
+            );
+        }
+
+        cycle_nodes.into_iter().collect()
+    }
+
+    /// Helper function for cycle detection DFS.
+    fn dfs_find_cycles<'a>(
+        &self,
+        node: &'a str,
+        adj: &HashMap<&'a str, Vec<&'a str>>,
+        visited: &mut HashMap<&'a str, bool>,
+        rec_stack: &mut HashMap<&'a str, bool>,
+        path: &mut Vec<&'a str>,
+        cycle_nodes: &mut std::collections::HashSet<String>,
+    ) {
+        visited.insert(node, true);
+        rec_stack.insert(node, true);
+        path.push(node);
+
+        if let Some(neighbors) = adj.get(node) {
+            for &neighbor in neighbors {
+                if !visited.get(neighbor).copied().unwrap_or(false) {
+                    self.dfs_find_cycles(neighbor, adj, visited, rec_stack, path, cycle_nodes);
+                } else if rec_stack.get(neighbor).copied().unwrap_or(false) {
+                    // Found a cycle - mark all nodes from neighbor to current as cycle nodes
+                    let mut in_cycle = false;
+                    for &p in path.iter() {
+                        if p == neighbor {
+                            in_cycle = true;
+                        }
+                        if in_cycle {
+                            cycle_nodes.insert(p.to_string());
+                        }
+                    }
+                }
+            }
+        }
+
+        path.pop();
+        rec_stack.insert(node, false);
+    }
+
     /// Calculate clustering coefficient for all nodes.
     ///
     /// Clustering coefficient measures how connected a node's neighbors are
