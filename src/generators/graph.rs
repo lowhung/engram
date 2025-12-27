@@ -1,13 +1,12 @@
 //! Graph topology generator.
 //!
-//! Visualizes the actual module adjacency graph as a dendrite-like
-//! network diagram. Modules are nodes, topics are connections.
+//! Visualizes the actual module adjacency graph as a bold, graphic
+//! network diagram. Clean, solid colors - no gradients, no glows.
 //!
 //! The visual structure reflects the actual graph topology:
 //! - Node roles (source/sink/processor) influence position and appearance
-//! - Edge weights and rates affect curve intensity
-//! - Graph depth and branching factor shape the overall layout
-//! - Randomization adds organic variation while preserving structure
+//! - Multi-ring or solid nodes based on randomization
+//! - Always black edges, solid strokes, no arrowheads
 
 use crate::generators::Generator;
 use crate::metrics::{GraphEdge, GraphNode, NeuralMetrics, NodeTemporalMetrics};
@@ -16,74 +15,121 @@ use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::f64::consts::PI;
 
-/// Extended color palette with role-based hue ranges.
-///
-/// The palette extends beyond pure blues to include:
-/// - Cyan/teal for sources (data producers)
-/// - Deep blue for processors (transformers)
-/// - Purple/violet for sinks (data consumers)
-/// - Warm accents (amber/orange) for high-activity elements
-mod palette {
-    /// Background color
-    pub const BG: &str = "#000000";
-
-    /// Base hue ranges by role (HSL hue values)
-    pub const HUE_SOURCE: f64 = 175.0; // Cyan/teal - data flows OUT
-    pub const HUE_PROCESSOR: f64 = 210.0; // Blue - data flows THROUGH
-    pub const HUE_SINK: f64 = 255.0; // Purple/violet - data flows IN
-
-    /// Hue variation allowed within each role
-    pub const HUE_VARIANCE: f64 = 15.0;
-
-    /// Warm accent hue for high activity (amber/orange)
-    pub const HUE_ACCENT: f64 = 35.0;
-
-    /// Convert HSL to hex color string
-    pub fn hsl_to_hex(h: f64, s: f64, l: f64) -> String {
-        // Normalize hue to 0-360
-        let h = ((h % 360.0) + 360.0) % 360.0;
-
-        let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
-        let x = c * (1.0 - ((h / 60.0) % 2.0 - 1.0).abs());
-        let m = l - c / 2.0;
-
-        let (r, g, b) = if h < 60.0 {
-            (c, x, 0.0)
-        } else if h < 120.0 {
-            (x, c, 0.0)
-        } else if h < 180.0 {
-            (0.0, c, x)
-        } else if h < 240.0 {
-            (0.0, x, c)
-        } else if h < 300.0 {
-            (x, 0.0, c)
-        } else {
-            (c, 0.0, x)
-        };
-
-        let r = ((r + m) * 255.0) as u8;
-        let g = ((g + m) * 255.0) as u8;
-        let b = ((b + m) * 255.0) as u8;
-
-        format!("#{:02x}{:02x}{:02x}", r, g, b)
+/// Color palette - solid colors, configurable.
+pub mod palette {
+    /// The color palette configuration
+    #[derive(Debug, Clone)]
+    pub struct ColorPalette {
+        pub background: String,
+        pub node_colors: Vec<String>,
+        pub edge_color: String,
     }
 
-    /// Get base hue for a node role
-    pub fn role_hue(role: NodeRole) -> f64 {
-        match role {
-            NodeRole::Source => HUE_SOURCE,
-            NodeRole::Processor => HUE_PROCESSOR,
-            NodeRole::Sink => HUE_SINK,
+    impl Default for ColorPalette {
+        fn default() -> Self {
+            // Default: use a curated subset of bold Catppuccin colors
+            Self {
+                background: BASE.to_string(),
+                node_colors: vec![
+                    MAUVE.to_string(),
+                    PINK.to_string(),
+                    PEACH.to_string(),
+                    SAPPHIRE.to_string(),
+                    LAVENDER.to_string(),
+                ],
+                edge_color: TEXT.to_string(),
+            }
         }
     }
 
-    /// Get an accent color for high-activity elements
-    /// Blends toward warm amber based on intensity (0.0-1.0)
-    pub fn accent_blend(base_hue: f64, intensity: f64) -> f64 {
-        // Blend from base hue toward accent hue based on intensity
-        let blend = intensity.clamp(0.0, 1.0);
-        base_hue * (1.0 - blend * 0.3) + HUE_ACCENT * (blend * 0.3)
+    impl ColorPalette {
+        /// Get a node color by index (cycles through available colors)
+        pub fn node_color(&self, index: usize) -> &str {
+            &self.node_colors[index % self.node_colors.len()]
+        }
+
+        /// Create a new palette with custom colors
+        pub fn new(background: &str, node_colors: Vec<&str>, edge_color: &str) -> Self {
+            Self {
+                background: background.to_string(),
+                node_colors: node_colors.into_iter().map(|s| s.to_string()).collect(),
+                edge_color: edge_color.to_string(),
+            }
+        }
+
+        /// Create from a list of hex color strings for nodes
+        pub fn with_node_colors(node_colors: Vec<&str>) -> Self {
+            Self {
+                background: BASE.to_string(),
+                node_colors: node_colors.into_iter().map(|s| s.to_string()).collect(),
+                edge_color: TEXT.to_string(),
+            }
+        }
+
+        /// Create a randomized palette using the seed
+        /// Picks a random background from Catppuccin and a subset of node colors
+        pub fn random(seed: u64) -> Self {
+            use rand::seq::SliceRandom;
+            use rand::{Rng, SeedableRng};
+            let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
+
+            // All possible backgrounds (mix of light and dark options)
+            let backgrounds = [BASE, MANTLE, CRUST, SURFACE0, SURFACE1, SURFACE2];
+            let background = backgrounds[rng.gen_range(0..backgrounds.len())];
+
+            // All vibrant colors to choose from
+            let all_colors = [
+                ROSEWATER, FLAMINGO, PINK, MAUVE, RED, MAROON, PEACH, YELLOW, GREEN, TEAL, SKY,
+                SAPPHIRE, BLUE, LAVENDER,
+            ];
+
+            // Pick 3-6 colors randomly
+            let color_count = rng.gen_range(3..=6);
+            let mut colors: Vec<&str> = all_colors.to_vec();
+            colors.shuffle(&mut rng);
+            let node_colors: Vec<String> = colors
+                .iter()
+                .take(color_count)
+                .map(|s| s.to_string())
+                .collect();
+
+            Self {
+                background: background.to_string(),
+                node_colors,
+                edge_color: TEXT.to_string(),
+            }
+        }
     }
+
+    // Catppuccin Latte palette
+    pub const ROSEWATER: &str = "#dc8a78";
+    pub const FLAMINGO: &str = "#dd7878";
+    pub const PINK: &str = "#ea76cb";
+    pub const MAUVE: &str = "#8839ef";
+    pub const RED: &str = "#d20f39";
+    pub const MAROON: &str = "#e64553";
+    pub const PEACH: &str = "#fe640b";
+    pub const YELLOW: &str = "#df8e1d";
+    pub const GREEN: &str = "#40a02b";
+    pub const TEAL: &str = "#179299";
+    pub const SKY: &str = "#04a5e5";
+    pub const SAPPHIRE: &str = "#209fb5";
+    pub const BLUE: &str = "#1e66f5";
+    pub const LAVENDER: &str = "#7287fd";
+
+    // Catppuccin Latte neutrals
+    pub const TEXT: &str = "#4c4f69";
+    pub const SUBTEXT1: &str = "#5c5f77";
+    pub const SUBTEXT0: &str = "#6c6f85";
+    pub const OVERLAY2: &str = "#7c7f93";
+    pub const OVERLAY1: &str = "#8c8fa1";
+    pub const OVERLAY0: &str = "#9ca0b0";
+    pub const SURFACE2: &str = "#acb0be";
+    pub const SURFACE1: &str = "#bcc0cc";
+    pub const SURFACE0: &str = "#ccd0da";
+    pub const BASE: &str = "#eff1f5";
+    pub const MANTLE: &str = "#e6e9ef";
+    pub const CRUST: &str = "#dce0e8";
 
     /// Role of a node in the graph topology
     #[derive(Debug, Clone, Copy, PartialEq)]
@@ -94,12 +140,13 @@ mod palette {
     }
 }
 
-use palette::NodeRole;
+use palette::{ColorPalette, NodeRole};
 
 pub struct GraphGenerator {
     pub width: u32,
     pub height: u32,
     pub style: GraphStyle,
+    pub palette: ColorPalette,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -118,6 +165,7 @@ impl Default for GraphGenerator {
             width: 2048,
             height: 2048,
             style: GraphStyle::Organic,
+            palette: ColorPalette::default(),
         }
     }
 }
@@ -139,8 +187,8 @@ struct PositionedNode {
     in_degree: usize,
     /// Number of outgoing connections
     out_degree: usize,
-    /// Assigned hue for consistent coloring
-    hue: f64,
+    /// Index into the color palette for this node
+    color_index: usize,
     /// Betweenness centrality (0.0-1.0) - how much of a bridge/hub
     centrality: f64,
     /// Clustering coefficient (0.0-1.0) - how clique-y the neighborhood
@@ -151,6 +199,8 @@ struct PositionedNode {
     in_cycle: bool,
     /// Temporal metrics from multi-snapshot capture
     temporal: NodeTemporalMetrics,
+    /// Number of concentric rings (1 = solid, 2-4 = concentric)
+    ring_count: u8,
 }
 
 impl GraphGenerator {
@@ -159,7 +209,13 @@ impl GraphGenerator {
             width,
             height,
             style,
+            palette: ColorPalette::default(),
         }
+    }
+
+    pub fn with_palette(mut self, palette: ColorPalette) -> Self {
+        self.palette = palette;
+        self
     }
 
     /// Scale factor for high-res output.
@@ -256,12 +312,6 @@ impl GraphGenerator {
         (in_degrees, out_degrees)
     }
 
-    /// Get activity level normalized to 0.0-1.0.
-    fn activity_level(throughput: u64, rate: Option<f64>) -> f64 {
-        let activity = rate.unwrap_or_else(|| (throughput as f64).log10().max(0.0) * 10.0);
-        (activity / 200.0).min(1.0)
-    }
-
     /// Position nodes using a force-directed-like layout.
     ///
     /// Uses graph topology to inform initial placement:
@@ -311,20 +361,17 @@ impl GraphGenerator {
                     .cloned()
                     .unwrap_or_default();
 
-                // Assign hue based on role with hash-based variation
-                // Long-lived nodes (is_original) get deeper, richer hues
-                // Newcomers get slightly brighter hues
-                let role_hue = palette::role_hue(role);
-                let hash_offset =
-                    (Self::hash_to_float(&node.name) - 0.5) * palette::HUE_VARIANCE * 2.0;
-                let age_shift = if temporal.is_original {
-                    -5.0 // Deeper hue for long-lived
-                } else if temporal.is_newcomer {
-                    10.0 // Brighter for newcomers
+                // Assign color index based on node name hash (deterministic)
+                let hash = Self::hash_to_float(&node.name);
+                let color_index = (hash * 1000.0) as usize;
+
+                // Randomly decide ring count: 1 (solid) or 2-4 (concentric)
+                // ~50% solid, ~50% concentric with varying ring counts
+                let ring_count = if rng.gen_bool(0.5) {
+                    1 // Solid circle
                 } else {
-                    0.0
+                    rng.gen_range(2..=4) // Concentric rings
                 };
-                let hue = role_hue + hash_offset + age_shift + rng.gen_range(-3.0..3.0);
 
                 let cx = self.width as f64 / 2.0;
                 let cy = self.height as f64 / 2.0;
@@ -383,12 +430,13 @@ impl GraphGenerator {
                     depth,
                     in_degree: in_deg,
                     out_degree: out_deg,
-                    hue,
+                    color_index,
                     centrality,
                     clustering,
                     pagerank,
                     in_cycle,
                     temporal,
+                    ring_count,
                 }
             })
             .collect();
@@ -502,19 +550,16 @@ impl GraphGenerator {
                     .cloned()
                     .unwrap_or_default();
 
-                // Assign hue based on role with hash-based variation
-                // Long-lived nodes get deeper hues, newcomers get brighter
-                let role_hue = palette::role_hue(role);
-                let hash_offset =
-                    (Self::hash_to_float(&node.name) - 0.5) * palette::HUE_VARIANCE * 2.0;
-                let age_shift = if temporal.is_original {
-                    -5.0
-                } else if temporal.is_newcomer {
-                    10.0
+                // Assign color index based on node name hash (deterministic)
+                let hash = Self::hash_to_float(&node.name);
+                let color_index = (hash * 1000.0) as usize;
+
+                // Randomly decide ring count: 1 (solid) or 2-4 (concentric)
+                let ring_count = if rng.gen_bool(0.5) {
+                    1
                 } else {
-                    0.0
+                    rng.gen_range(2..=4)
                 };
-                let hue = role_hue + hash_offset + age_shift + rng.gen_range(-3.0..3.0);
 
                 let angle = (i as f64 / sorted_nodes.len() as f64) * PI * 2.0 - PI / 2.0;
 
@@ -554,12 +599,13 @@ impl GraphGenerator {
                     depth,
                     in_degree: in_deg,
                     out_degree: out_deg,
-                    hue,
+                    color_index,
                     centrality,
                     clustering,
                     pagerank,
                     in_cycle,
                     temporal,
+                    ring_count,
                 }
             })
             .collect()
@@ -649,19 +695,16 @@ impl GraphGenerator {
                     .cloned()
                     .unwrap_or_default();
 
-                // Assign hue based on role with hash-based variation
-                // Long-lived nodes get deeper hues, newcomers get brighter
-                let role_hue = palette::role_hue(role);
-                let hash_offset =
-                    (Self::hash_to_float(&node.name) - 0.5) * palette::HUE_VARIANCE * 2.0;
-                let age_shift = if temporal.is_original {
-                    -5.0
-                } else if temporal.is_newcomer {
-                    10.0
+                // Assign color index based on node name hash (deterministic)
+                let hash = Self::hash_to_float(&node.name);
+                let color_index = (hash * 1000.0) as usize;
+
+                // Randomly decide ring count: 1 (solid) or 2-4 (concentric)
+                let ring_count = if rng.gen_bool(0.5) {
+                    1
                 } else {
-                    0.0
+                    rng.gen_range(2..=4)
                 };
-                let hue = role_hue + hash_offset + age_shift + rng.gen_range(-3.0..3.0);
 
                 // Position within layer - high importance nodes get positioned toward center
                 let importance = (centrality + pagerank) / 2.0;
@@ -696,12 +739,13 @@ impl GraphGenerator {
                     depth,
                     in_degree: in_deg,
                     out_degree: out_deg,
-                    hue,
+                    color_index,
                     centrality,
                     clustering,
                     pagerank,
                     in_cycle,
                     temporal,
+                    ring_count,
                 });
             }
         }
@@ -709,21 +753,14 @@ impl GraphGenerator {
         positions
     }
 
-    /// Draw curved edges between nodes with topology-aware styling.
+    /// Draw edges between nodes.
     ///
-    /// Edge curves are influenced by:
-    /// - Flow direction (top-to-bottom curves more naturally)
-    /// - Rate/activity affects stroke width, opacity, and animation
-    /// - Topic hash determines curve direction for consistency
-    /// - Gradients flow from source to target color
-    /// - Arrowheads indicate directionality
-    /// - Dash patterns vary by message rate
+    /// Edges take on the color of their source node.
     fn draw_edges(
         &self,
         positions: &[PositionedNode],
         edges: &[GraphEdge],
         rng: &mut impl Rng,
-        edge_gradients: &mut Vec<String>,
     ) -> Vec<String> {
         let scale = self.scale();
         let pos_map: HashMap<&str, &PositionedNode> =
@@ -731,12 +768,10 @@ impl GraphGenerator {
 
         edges
             .iter()
-            .enumerate()
-            .filter_map(|(edge_idx, edge)| {
+            .filter_map(|edge| {
                 let src = pos_map.get(edge.source.as_str())?;
                 let tgt = pos_map.get(edge.target.as_str())?;
 
-                // Calculate edge with some curve
                 let dx = tgt.x - src.x;
                 let dy = tgt.y - src.y;
                 let dist = (dx * dx + dy * dy).sqrt();
@@ -753,380 +788,68 @@ impl GraphGenerator {
                 let end_x = tgt.x - angle.cos() * tgt.radius;
                 let end_y = tgt.y - angle.sin() * tgt.radius;
 
-                // Curve amount based on topic hash (for consistency) + depth difference
+                // Curve amount based on topic hash (for consistency)
                 let topic_hash = Self::hash_to_float(&edge.topic);
                 let depth_diff = (tgt.depth as i32 - src.depth as i32).abs() as f64;
-
-                // More curve for longer distances and cross-depth connections
                 let base_curve = 30.0 + depth_diff * 15.0;
-                // Direction based on topic hash (deterministic per topic)
                 let curve_direction = if topic_hash > 0.5 { 1.0 } else { -1.0 };
-                // Add randomness but keep it bounded
                 let curve_amount = (base_curve + rng.gen_range(-20.0..20.0)) * curve_direction * scale;
 
-                // Control point for bezier curve (perpendicular offset)
+                // Control point for bezier curve
                 let mid_x = (start_x + end_x) / 2.0;
                 let mid_y = (start_y + end_y) / 2.0;
                 let perp_angle = angle + PI / 2.0;
                 let ctrl_x = mid_x + perp_angle.cos() * curve_amount;
                 let ctrl_y = mid_y + perp_angle.sin() * curve_amount;
 
-                // Activity level for this edge
-                let activity = edge.rate.map(|r| (r / 100.0).min(1.0)).unwrap_or(0.2);
-                let rate = edge.rate.unwrap_or(10.0);
-
                 // Stroke width based on rate and connectivity
+                let rate = edge.rate.unwrap_or(10.0);
                 let base_width = 1.5 * scale;
                 let rate_factor = (rate.log10().max(0.0) / 2.0).min(2.0);
                 let degree_factor = ((src.out_degree + tgt.in_degree) as f64 / 10.0).min(1.0);
                 let stroke_width = base_width + (rate_factor * 0.6 + degree_factor * 0.4) * 2.0 * scale;
 
-                // Source and target colors for gradient
-                let src_saturation = 0.6 + activity * 0.3;
-                let tgt_saturation = 0.6 + activity * 0.3;
-                let src_lightness = 0.4 + activity * 0.15;
-                let tgt_lightness = 0.4 + activity * 0.15;
-                let src_color = palette::hsl_to_hex(src.hue, src_saturation, src_lightness);
-                let tgt_color = palette::hsl_to_hex(tgt.hue, tgt_saturation, tgt_lightness);
+                // Edge color from source node
+                let edge_color = self.palette.node_color(src.color_index);
 
-                // Create gradient definition for this edge
-                let gradient_id = format!("edgeGrad_{}", edge_idx);
-
-                // Calculate gradient direction based on edge angle
-                let grad_x1 = ((start_x / self.width as f64) * 100.0).clamp(0.0, 100.0);
-                let grad_y1 = ((start_y / self.height as f64) * 100.0).clamp(0.0, 100.0);
-                let grad_x2 = ((end_x / self.width as f64) * 100.0).clamp(0.0, 100.0);
-                let grad_y2 = ((end_y / self.height as f64) * 100.0).clamp(0.0, 100.0);
-
-                edge_gradients.push(format!(
-                    r#"  <linearGradient id="{}" x1="{:.1}%" y1="{:.1}%" x2="{:.1}%" y2="{:.1}%">
-    <stop offset="0%" stop-color="{}"/>
-    <stop offset="100%" stop-color="{}"/>
-  </linearGradient>"#,
-                    gradient_id, grad_x1, grad_y1, grad_x2, grad_y2, src_color, tgt_color
-                ));
-
-                // Opacity based on rate
-                let opacity = 0.5 + activity * 0.4;
-
-                // Dash pattern based on message rate
-                // Higher rate = longer dashes, lower rate = shorter dashes with gaps
-                let dash_array = if rate > 50.0 {
-                    // High rate: long dashes (nearly solid)
-                    let dash = 20.0 * scale;
-                    let gap = 5.0 * scale;
-                    format!("{:.1} {:.1}", dash, gap)
-                } else if rate > 20.0 {
-                    // Medium rate: medium dashes
-                    let dash = 12.0 * scale;
-                    let gap = 6.0 * scale;
-                    format!("{:.1} {:.1}", dash, gap)
-                } else if rate > 5.0 {
-                    // Low rate: short dashes
-                    let dash = 6.0 * scale;
-                    let gap = 8.0 * scale;
-                    format!("{:.1} {:.1}", dash, gap)
-                } else {
-                    // Very low rate: dotted
-                    let dash = 3.0 * scale;
-                    let gap = 6.0 * scale;
-                    format!("{:.1} {:.1}", dash, gap)
-                };
-
-                let mut paths = Vec::new();
-
-                // Generate fiber strokes for active edges
-                let fiber_count = if activity > 0.5 { 2 } else { 1 };
-
-                for i in 0..fiber_count {
-                    let fiber_offset = if fiber_count > 1 {
-                        let spread = stroke_width * 0.6;
-                        let offset_ratio = (i as f64 - (fiber_count - 1) as f64 / 2.0) / (fiber_count as f64);
-                        offset_ratio * spread
-                    } else {
-                        0.0
-                    };
-
-                    let fiber_ctrl_x = ctrl_x + perp_angle.cos() * fiber_offset;
-                    let fiber_ctrl_y = ctrl_y + perp_angle.sin() * fiber_offset;
-
-                    let fiber_width = if fiber_count > 1 {
-                        stroke_width / fiber_count as f64 * 1.1
-                    } else {
-                        stroke_width
-                    };
-
-                    let fiber_opacity = opacity * (0.85 + 0.15 * (i as f64 / fiber_count.max(1) as f64));
-
-                    paths.push(format!(
-                        r#"<path d="M {:.1} {:.1} Q {:.1} {:.1} {:.1} {:.1}" fill="none" stroke="url(#{})" stroke-width="{:.2}" opacity="{:.2}" stroke-linecap="round" stroke-dasharray="{}"/>"#,
-                        start_x, start_y, fiber_ctrl_x, fiber_ctrl_y, end_x, end_y,
-                        gradient_id, fiber_width, fiber_opacity, dash_array
-                    ));
-                }
-
-                // Add arrowhead at the target end
-                let arrow_size = (3.0 + stroke_width * 0.3) * scale;
-
-                // Calculate the tangent direction at the end of the bezier curve
-                // For a quadratic bezier, the tangent at t=1 is: 2(P2 - P1) where P1=control, P2=end
-                let tangent_x = end_x - ctrl_x;
-                let tangent_y = end_y - ctrl_y;
-                let tangent_len = (tangent_x * tangent_x + tangent_y * tangent_y).sqrt();
-                let norm_tx = tangent_x / tangent_len;
-                let norm_ty = tangent_y / tangent_len;
-
-                // Arrow tip is at end point, base is behind it
-                let arrow_base_x = end_x - norm_tx * arrow_size;
-                let arrow_base_y = end_y - norm_ty * arrow_size;
-
-                // Perpendicular for arrow wings
-                let perp_x = -norm_ty;
-                let perp_y = norm_tx;
-                let wing_spread = arrow_size * 0.5;
-
-                let wing1_x = arrow_base_x + perp_x * wing_spread;
-                let wing1_y = arrow_base_y + perp_y * wing_spread;
-                let wing2_x = arrow_base_x - perp_x * wing_spread;
-                let wing2_y = arrow_base_y - perp_y * wing_spread;
-
-                paths.push(format!(
-                    r#"<polygon points="{:.1},{:.1} {:.1},{:.1} {:.1},{:.1}" fill="{}" opacity="{:.2}"/>"#,
-                    end_x, end_y, wing1_x, wing1_y, wing2_x, wing2_y, tgt_color, opacity
-                ));
-
-                Some(paths.join("\n"))
+                Some(format!(
+                    r#"<path d="M {:.1} {:.1} Q {:.1} {:.1} {:.1} {:.1}" fill="none" stroke="{}" stroke-width="{:.2}" stroke-linecap="round"/>"#,
+                    start_x, start_y, ctrl_x, ctrl_y, end_x, end_y, edge_color, stroke_width
+                ))
             })
             .collect()
     }
 
-    /// Draw nodes as bold circles with role-based visual hierarchy.
+    /// Draw nodes as solid circles or concentric rings.
     ///
-    /// Uses subtle radial gradients for depth without excessive glow.
-    /// Visual distinctions by role:
-    /// - Sources: Cyan-shifted, outer ring indicator
-    /// - Sinks: Purple-shifted, solid appearance
-    /// - Processors: Balanced blue appearance
-    ///
-    /// Centrality and clustering influence appearance:
-    /// - High centrality: Larger size, more prominent stroke
-    /// - High clustering: Subtle secondary ring (interconnected neighborhood)
-    ///
-    /// Temporal metrics influence appearance:
-    /// - Recent bursts: Warmer accent color shift
-    /// - High rate variance: Dashed stroke (visual instability)
-    /// - Trends: Directional indicator (arrow pointing up/down)
-    fn draw_nodes(&self, positions: &[PositionedNode], _rng: &mut impl Rng) -> Vec<String> {
-        let scale = self.scale();
-
+    /// No gradients, no glow - just bold solid shapes.
+    fn draw_nodes(&self, positions: &[PositionedNode]) -> Vec<String> {
         positions
             .iter()
             .flat_map(|node| {
-                let activity = Self::activity_level(node.throughput, node.rate);
-                let node_id = node.name.replace(|c: char| !c.is_alphanumeric(), "_");
-
+                let fill_color = self.palette.node_color(node.color_index);
                 let mut elements = Vec::new();
 
-                // Temporal-aware burst intensity
-                let burst_factor = if node.temporal.has_recent_burst {
-                    (node.temporal.burst_intensity / 5.0).min(1.0)
+                if node.ring_count == 1 {
+                    // Solid filled circle
+                    elements.push(format!(
+                        r#"<circle cx="{:.1}" cy="{:.1}" r="{:.1}" fill="{}"/>"#,
+                        node.x, node.y, node.radius, fill_color
+                    ));
                 } else {
-                    0.0
-                };
+                    // Concentric rings - draw from outside in
+                    let ring_spacing = node.radius / (node.ring_count as f64 + 0.5);
+                    let stroke_width = ring_spacing * 0.8;
 
-                // Shift hue toward warm accent for bursting nodes
-                let effective_hue = if node.temporal.has_recent_burst {
-                    palette::accent_blend(node.hue, burst_factor * 0.5)
-                } else {
-                    node.hue
-                };
-
-                // Subtle outer halo - much smaller and less intense than before
-                // Only for high-activity or high-centrality nodes
-                if activity > 0.6 || node.centrality > 0.4 {
-                    let halo_radius = node.radius * 1.3;
-                    let halo_opacity = 0.15 + node.centrality * 0.1;
-                    elements.push(format!(
-                        r#"<circle cx="{:.1}" cy="{:.1}" r="{:.1}" fill="url(#glowGrad_{})" opacity="{:.2}"/>"#,
-                        node.x, node.y, halo_radius, node_id, halo_opacity
-                    ));
-                }
-
-                // Core node with radial gradient fill - bold and solid
-                let centrality_saturation_boost = node.centrality * 0.1;
-                let burst_saturation_boost = burst_factor * 0.15;
-
-                let stroke_color = match node.role {
-                    NodeRole::Source => palette::hsl_to_hex(
-                        effective_hue - 5.0,
-                        (0.75 + centrality_saturation_boost + burst_saturation_boost).min(1.0),
-                        0.65,
-                    ),
-                    NodeRole::Sink => palette::hsl_to_hex(
-                        effective_hue + 5.0,
-                        (0.7 + centrality_saturation_boost + burst_saturation_boost).min(1.0),
-                        0.55,
-                    ),
-                    NodeRole::Processor => palette::hsl_to_hex(
-                        effective_hue,
-                        (0.72 + centrality_saturation_boost + burst_saturation_boost).min(1.0),
-                        0.60,
-                    ),
-                };
-
-                // Thicker, bolder strokes
-                let centrality_stroke_boost = node.centrality * 0.8;
-                let stroke_width = match node.role {
-                    NodeRole::Source => (2.5 + centrality_stroke_boost) * scale,
-                    NodeRole::Sink => (1.8 + centrality_stroke_boost) * scale,
-                    NodeRole::Processor => (2.0 + centrality_stroke_boost) * scale,
-                };
-
-                // High rate variance = dashed stroke (visual instability)
-                let stroke_dasharray = if node.temporal.rate_variance > 0.5 {
-                    let dash_len = 4.0 * scale * (1.0 - node.temporal.rate_variance.min(1.5) / 2.0);
-                    let gap_len = 2.0 * scale * node.temporal.rate_variance.min(1.5);
-                    format!(r#" stroke-dasharray="{:.1} {:.1}""#, dash_len, gap_len)
-                } else {
-                    String::new()
-                };
-
-                // Main node circle - no filter for cleaner look
-                elements.push(format!(
-                    r#"<circle cx="{:.1}" cy="{:.1}" r="{:.1}" fill="url(#nodeGrad_{})" stroke="{}" stroke-width="{:.1}"{}/>"#,
-                    node.x, node.y, node.radius, node_id, stroke_color, stroke_width, stroke_dasharray
-                ));
-
-                // Subtle center highlight - smaller and less prominent
-                let center_radius = node.radius * (0.2 + activity * 0.1);
-                let highlight_color = palette::hsl_to_hex(effective_hue, 0.4, 0.85);
-                let center_opacity = 0.4 + activity * 0.2;
-                elements.push(format!(
-                    r#"<circle cx="{:.1}" cy="{:.1}" r="{:.1}" fill="{}" opacity="{:.2}"/>"#,
-                    node.x - node.radius * 0.15,
-                    node.y - node.radius * 0.15,
-                    center_radius,
-                    highlight_color,
-                    center_opacity
-                ));
-
-                // Sources get a subtle outer ring to show they're emitters
-                if node.role == NodeRole::Source {
-                    let ring_radius = node.radius * 1.15;
-                    elements.push(format!(
-                        r#"<circle cx="{:.1}" cy="{:.1}" r="{:.1}" fill="none" stroke="{}" stroke-width="{:.1}" opacity="0.6"/>"#,
-                        node.x, node.y, ring_radius, stroke_color, 1.0 * scale
-                    ));
-                }
-
-                // High clustering nodes get a subtle secondary ring
-                if node.clustering > 0.4 {
-                    let cluster_ring_radius = node.radius * 1.3;
-                    let cluster_opacity = (node.clustering - 0.4) * 0.4;
-                    let cluster_color = palette::hsl_to_hex(node.hue + 15.0, 0.5, 0.55);
-                    elements.push(format!(
-                        r#"<circle cx="{:.1}" cy="{:.1}" r="{:.1}" fill="none" stroke="{}" stroke-width="{:.1}" opacity="{:.2}" stroke-dasharray="{:.1} {:.1}"/>"#,
-                        node.x,
-                        node.y,
-                        cluster_ring_radius,
-                        cluster_color,
-                        1.0 * scale,
-                        cluster_opacity,
-                        3.0 * scale,
-                        3.0 * scale
-                    ));
-                }
-
-                // Recent burst indicator - warm accent ring
-                if node.temporal.has_recent_burst {
-                    let burst_ring_radius = node.radius * 1.4;
-                    let burst_color = palette::hsl_to_hex(palette::HUE_ACCENT, 0.85, 0.55);
-                    let burst_opacity = 0.4 + burst_factor * 0.2;
-                    elements.push(format!(
-                        r#"<circle cx="{:.1}" cy="{:.1}" r="{:.1}" fill="none" stroke="{}" stroke-width="{:.1}" opacity="{:.2}"/>"#,
-                        node.x,
-                        node.y,
-                        burst_ring_radius,
-                        burst_color,
-                        1.5 * scale,
-                        burst_opacity
-                    ));
-                }
-
-                // Trend indicator - small arrow showing activity direction
-                if node.temporal.trend.abs() > 0.2 {
-                    let arrow_size = 4.0 * scale;
-                    let arrow_offset = node.radius + 6.0 * scale;
-                    let trend_color = if node.temporal.trend > 0.0 {
-                        palette::hsl_to_hex(120.0, 0.6, 0.5) // Green for increasing
-                    } else {
-                        palette::hsl_to_hex(0.0, 0.6, 0.5) // Red for decreasing
-                    };
-                    let arrow_opacity = node.temporal.trend.abs().min(1.0) * 0.7;
-
-                    // Position arrow above or below node based on trend direction
-                    let (arrow_y, arrow_points) = if node.temporal.trend > 0.0 {
-                        // Upward arrow above node
-                        let ay = node.y - arrow_offset;
-                        let points = format!(
-                            "{:.1},{:.1} {:.1},{:.1} {:.1},{:.1}",
-                            node.x, ay - arrow_size,
-                            node.x - arrow_size * 0.6, ay + arrow_size * 0.3,
-                            node.x + arrow_size * 0.6, ay + arrow_size * 0.3
-                        );
-                        (ay, points)
-                    } else {
-                        // Downward arrow below node
-                        let ay = node.y + arrow_offset;
-                        let points = format!(
-                            "{:.1},{:.1} {:.1},{:.1} {:.1},{:.1}",
-                            node.x, ay + arrow_size,
-                            node.x - arrow_size * 0.6, ay - arrow_size * 0.3,
-                            node.x + arrow_size * 0.6, ay - arrow_size * 0.3
-                        );
-                        (ay, points)
-                    };
-
-                    let _ = arrow_y; // Suppress unused warning
-                    elements.push(format!(
-                        r#"<polygon points="{}" fill="{}" opacity="{:.2}"/>"#,
-                        arrow_points, trend_color, arrow_opacity
-                    ));
-                }
-
-                // Cycle indicator - circular arrows around node indicating feedback loop
-                if node.in_cycle {
-                    let cycle_radius = node.radius * 1.5;
-                    let cycle_color = palette::hsl_to_hex(45.0, 0.8, 0.5); // Golden/yellow for cycles
-
-                    // Draw a partial circular arc with arrows to indicate cycling
-                    let arc_start_angle = -PI / 4.0;
-                    let arc_end_angle = PI * 1.25;
-                    let start_x = node.x + cycle_radius * arc_start_angle.cos();
-                    let start_y = node.y + cycle_radius * arc_start_angle.sin();
-                    let end_x = node.x + cycle_radius * arc_end_angle.cos();
-                    let end_y = node.y + cycle_radius * arc_end_angle.sin();
-
-                    // SVG arc path
-                    elements.push(format!(
-                        r#"<path d="M {:.1} {:.1} A {:.1} {:.1} 0 1 1 {:.1} {:.1}" fill="none" stroke="{}" stroke-width="{:.1}" opacity="0.6" stroke-linecap="round"/>"#,
-                        start_x, start_y, cycle_radius, cycle_radius, end_x, end_y, cycle_color, 1.5 * scale
-                    ));
-
-                    // Small arrowhead at the end of the arc
-                    let arrow_size = 3.0 * scale;
-                    let arrow_angle = arc_end_angle + PI / 2.0; // Tangent direction
-                    let arrow_tip_x = end_x + arrow_angle.cos() * arrow_size * 0.5;
-                    let arrow_tip_y = end_y + arrow_angle.sin() * arrow_size * 0.5;
-                    let arrow_base1_x = end_x - arrow_angle.cos() * arrow_size * 0.3 + (arrow_angle + PI/2.0).cos() * arrow_size * 0.4;
-                    let arrow_base1_y = end_y - arrow_angle.sin() * arrow_size * 0.3 + (arrow_angle + PI/2.0).sin() * arrow_size * 0.4;
-                    let arrow_base2_x = end_x - arrow_angle.cos() * arrow_size * 0.3 - (arrow_angle + PI/2.0).cos() * arrow_size * 0.4;
-                    let arrow_base2_y = end_y - arrow_angle.sin() * arrow_size * 0.3 - (arrow_angle + PI/2.0).sin() * arrow_size * 0.4;
-
-                    elements.push(format!(
-                        r#"<polygon points="{:.1},{:.1} {:.1},{:.1} {:.1},{:.1}" fill="{}" opacity="0.6"/>"#,
-                        arrow_tip_x, arrow_tip_y, arrow_base1_x, arrow_base1_y, arrow_base2_x, arrow_base2_y, cycle_color
-                    ));
+                    for i in 0..node.ring_count {
+                        let ring_radius = node.radius - (i as f64 * ring_spacing) - ring_spacing * 0.5;
+                        if ring_radius > 0.0 {
+                            elements.push(format!(
+                                r#"<circle cx="{:.1}" cy="{:.1}" r="{:.1}" fill="none" stroke="{}" stroke-width="{:.1}"/>"#,
+                                node.x, node.y, ring_radius, fill_color, stroke_width
+                            ));
+                        }
+                    }
                 }
 
                 elements
@@ -1137,187 +860,39 @@ impl GraphGenerator {
     /// Generate organic style graph.
     fn generate_organic(&self, metrics: &NeuralMetrics, rng: &mut impl Rng) -> String {
         let positions = self.position_nodes_organic(metrics, rng);
-        let mut edge_gradients = Vec::new();
-        let edges = self.draw_edges(&positions, &metrics.graph.edges, rng, &mut edge_gradients);
-        let nodes = self.draw_nodes(&positions, rng);
-        let defs = self.generate_defs(&positions, &edge_gradients);
+        let edges = self.draw_edges(&positions, &metrics.graph.edges, rng);
+        let nodes = self.draw_nodes(&positions);
 
-        self.wrap_svg(
-            &defs,
-            &format!("{}\n{}", edges.join("\n"), nodes.join("\n")),
-        )
+        self.wrap_svg(&format!("{}\n{}", edges.join("\n"), nodes.join("\n")))
     }
 
     /// Generate circular style graph.
     fn generate_circular(&self, metrics: &NeuralMetrics, rng: &mut impl Rng) -> String {
         let positions = self.position_nodes_circular(metrics, rng);
-        let mut edge_gradients = Vec::new();
-        let edges = self.draw_edges(&positions, &metrics.graph.edges, rng, &mut edge_gradients);
-        let nodes = self.draw_nodes(&positions, rng);
-        let defs = self.generate_defs(&positions, &edge_gradients);
+        let edges = self.draw_edges(&positions, &metrics.graph.edges, rng);
+        let nodes = self.draw_nodes(&positions);
 
-        self.wrap_svg(
-            &defs,
-            &format!("{}\n{}", edges.join("\n"), nodes.join("\n")),
-        )
+        self.wrap_svg(&format!("{}\n{}", edges.join("\n"), nodes.join("\n")))
     }
 
     /// Generate hierarchical style graph.
     fn generate_hierarchical(&self, metrics: &NeuralMetrics, rng: &mut impl Rng) -> String {
         let positions = self.position_nodes_hierarchical(metrics, rng);
-        let mut edge_gradients = Vec::new();
-        let edges = self.draw_edges(&positions, &metrics.graph.edges, rng, &mut edge_gradients);
-        let nodes = self.draw_nodes(&positions, rng);
-        let defs = self.generate_defs(&positions, &edge_gradients);
+        let edges = self.draw_edges(&positions, &metrics.graph.edges, rng);
+        let nodes = self.draw_nodes(&positions);
 
-        self.wrap_svg(
-            &defs,
-            &format!("{}\n{}", edges.join("\n"), nodes.join("\n")),
-        )
+        self.wrap_svg(&format!("{}\n{}", edges.join("\n"), nodes.join("\n")))
     }
 
-    /// Generate SVG filter definitions for glow effects, gradients, and background textures.
-    fn generate_defs(&self, positions: &[PositionedNode], edge_gradients: &[String]) -> String {
-        let scale = self.scale();
-        let mut defs = String::from("<defs>\n");
-
-        // Noise texture filter for background grain
-        defs.push_str(&format!(
-            r#"  <filter id="noiseFilter" x="0%" y="0%" width="100%" height="100%">
-    <feTurbulence type="fractalNoise" baseFrequency="{:.4}" numOctaves="3" result="noise"/>
-    <feColorMatrix type="matrix" values="0 0 0 0 0.03  0 0 0 0 0.05  0 0 0 0 0.08  0 0 0 0.15 0"/>
-  </filter>
-"#,
-            0.5 / scale // Adjust frequency based on scale
-        ));
-
-        // Vignette gradient (radial fade from transparent center to dark edges)
-        defs.push_str(
-            "  <radialGradient id=\"vignette\" cx=\"50%\" cy=\"50%\" r=\"70%\" fx=\"50%\" fy=\"50%\">\n\
-             \x20\x20\x20\x20<stop offset=\"0%\" stop-color=\"#000000\" stop-opacity=\"0\"/>\n\
-             \x20\x20\x20\x20<stop offset=\"60%\" stop-color=\"#000000\" stop-opacity=\"0\"/>\n\
-             \x20\x20\x20\x20<stop offset=\"100%\" stop-color=\"#000000\" stop-opacity=\"0.7\"/>\n\
-             \x20\x20</radialGradient>\n",
-        );
-
-        // Soft glow filter - used for outer node halos
-        let blur_std = 8.0 * scale;
-        defs.push_str(&format!(
-            r#"  <filter id="softGlow" x="-100%" y="-100%" width="300%" height="300%">
-    <feGaussianBlur in="SourceGraphic" stdDeviation="{:.1}" result="blur"/>
-    <feMerge>
-      <feMergeNode in="blur"/>
-      <feMergeNode in="blur"/>
-      <feMergeNode in="SourceGraphic"/>
-    </feMerge>
-  </filter>
-"#,
-            blur_std
-        ));
-
-        // Intense glow for high-activity nodes
-        let intense_blur = 12.0 * scale;
-        defs.push_str(&format!(
-            r#"  <filter id="intenseGlow" x="-150%" y="-150%" width="400%" height="400%">
-    <feGaussianBlur in="SourceGraphic" stdDeviation="{:.1}" result="blur"/>
-    <feMerge>
-      <feMergeNode in="blur"/>
-      <feMergeNode in="blur"/>
-      <feMergeNode in="blur"/>
-      <feMergeNode in="SourceGraphic"/>
-    </feMerge>
-  </filter>
-"#,
-            intense_blur
-        ));
-
-        // Edge glow filter - subtler
-        let edge_blur = 4.0 * scale;
-        defs.push_str(&format!(
-            r#"  <filter id="edgeGlow" x="-50%" y="-50%" width="200%" height="200%">
-    <feGaussianBlur in="SourceGraphic" stdDeviation="{:.1}" result="blur"/>
-    <feMerge>
-      <feMergeNode in="blur"/>
-      <feMergeNode in="SourceGraphic"/>
-    </feMerge>
-  </filter>
-"#,
-            edge_blur
-        ));
-
-        // Generate radial gradients for each node
-        for node in positions {
-            let activity = Self::activity_level(node.throughput, node.rate);
-
-            // High activity nodes get warm-shifted hue
-            let node_hue = palette::accent_blend(node.hue, activity * 0.3);
-
-            // Bold gradient - less dramatic falloff, more solid appearance
-            let center_saturation = 0.6 + activity * 0.2;
-            let edge_saturation = 0.7 + activity * 0.2;
-            let center_lightness = 0.55 + activity * 0.15;
-            let edge_lightness = 0.35 + activity * 0.1;
-            let center_color = palette::hsl_to_hex(node_hue, center_saturation, center_lightness);
-            let edge_color = palette::hsl_to_hex(node_hue, edge_saturation, edge_lightness);
-
-            defs.push_str(&format!(
-                r#"  <radialGradient id="nodeGrad_{}" cx="35%" cy="35%" r="65%" fx="35%" fy="35%">
-    <stop offset="0%" stop-color="{}"/>
-    <stop offset="100%" stop-color="{}"/>
-  </radialGradient>
-"#,
-                node.name.replace(|c: char| !c.is_alphanumeric(), "_"),
-                center_color,
-                edge_color
-            ));
-
-            // Subtle halo gradient (much less intense)
-            let halo_color = palette::hsl_to_hex(node.hue, 0.5, 0.5);
-            defs.push_str(&format!(
-                r#"  <radialGradient id="glowGrad_{}">
-    <stop offset="0%" stop-color="{}" stop-opacity="0.25"/>
-    <stop offset="70%" stop-color="{}" stop-opacity="0.08"/>
-    <stop offset="100%" stop-color="{}" stop-opacity="0"/>
-  </radialGradient>
-"#,
-                node.name.replace(|c: char| !c.is_alphanumeric(), "_"),
-                halo_color,
-                halo_color,
-                halo_color
-            ));
-        }
-
-        // Add edge gradients
-        for gradient in edge_gradients {
-            defs.push_str(gradient);
-            defs.push('\n');
-        }
-
-        defs.push_str("</defs>");
-        defs
-    }
-
-    fn wrap_svg(&self, defs: &str, content: &str) -> String {
+    /// Wrap content in a simple SVG with solid background.
+    fn wrap_svg(&self, content: &str) -> String {
         format!(
             r#"<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {} {}" width="{}" height="{}">
-  {}
-  <!-- Background -->
   <rect width="100%" height="100%" fill="{}"/>
-  <!-- Noise texture overlay -->
-  <rect width="100%" height="100%" filter="url(#noiseFilter)" opacity="1"/>
-  <!-- Graph content -->
   {}
-  <!-- Vignette overlay -->
-  <rect width="100%" height="100%" fill="url(#vignette)"/>
 </svg>"#,
-            self.width,
-            self.height,
-            self.width,
-            self.height,
-            defs,
-            palette::BG,
-            content
+            self.width, self.height, self.width, self.height, self.palette.background, content
         )
     }
 }

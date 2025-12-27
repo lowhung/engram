@@ -1,9 +1,9 @@
-//! Engram CLI - Generate dendrite-like visualizations from neural network topology.
+//! Engram CLI - Generate bold graphic visualizations from neural network topology.
 
 use anyhow::Result;
 use clap::{Parser, ValueEnum};
 use engram::config::EngramConfig;
-use engram::generators::graph::{GraphGenerator, GraphStyle};
+use engram::generators::graph::{palette::ColorPalette, GraphGenerator, GraphStyle};
 use engram::generators::Generator;
 use engram::metrics::NeuralMetrics;
 use neuronic::{capture_snapshots, AggregatedMetrics, CaptureConfig, SubscriberConfig};
@@ -47,6 +47,18 @@ enum Commands {
         /// Height of the output
         #[arg(long)]
         height: Option<u32>,
+
+        /// Background color (hex, e.g. "#0a0a0a")
+        #[arg(long)]
+        background: Option<String>,
+
+        /// Node colors (comma-separated hex values, e.g. "#3988A4,#67C2D4,#D0944D")
+        #[arg(long)]
+        node_colors: Option<String>,
+
+        /// Edge color (hex, e.g. "#ffffff")
+        #[arg(long)]
+        edge_color: Option<String>,
     },
 
     /// Capture live metrics from neuronic and generate art
@@ -167,12 +179,36 @@ async fn main() -> Result<()> {
             seed,
             width,
             height,
+            background,
+            node_colors,
+            edge_color,
         } => {
             let width = width.unwrap_or(config.output.width);
             let height = height.unwrap_or(config.output.height);
             let seed = seed.unwrap_or_else(rand::random);
 
-            let gen = GraphGenerator::new(width, height, style.to_style());
+            // Build palette - random by default, or custom if specified
+            let palette = {
+                let mut p = if background.is_some() || node_colors.is_some() || edge_color.is_some()
+                {
+                    ColorPalette::default()
+                } else {
+                    // Use randomized palette based on seed
+                    ColorPalette::random(seed)
+                };
+                if let Some(bg) = background {
+                    p.background = bg;
+                }
+                if let Some(colors) = node_colors {
+                    p.node_colors = colors.split(',').map(|s| s.trim().to_string()).collect();
+                }
+                if let Some(edge) = edge_color {
+                    p.edge_color = edge;
+                }
+                p
+            };
+
+            let gen = GraphGenerator::new(width, height, style.to_style()).with_palette(palette);
             let metrics = NeuralMetrics::sample(seed);
 
             println!("Generating {} with seed {}...", style.name(), seed);
