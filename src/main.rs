@@ -342,12 +342,18 @@ async fn main() -> Result<()> {
                     let path = out_dir.join(&filename);
                     fs::write(&path, &result)?;
 
+                    // Show downsampled count (max 12 nodes by default)
+                    let displayed_nodes = metrics
+                        .graph
+                        .nodes
+                        .len()
+                        .min(gen.max_nodes.unwrap_or(usize::MAX));
                     println!(
-                        "  Generated: {} [{}] ({} nodes, {} edges)",
+                        "  Generated: {} [{}] ({} nodes sampled from {})",
                         filename,
                         current_style.name(),
-                        metrics.graph.nodes.len(),
-                        metrics.graph.edges.len()
+                        displayed_nodes,
+                        metrics.graph.nodes.len()
                     );
 
                     if save_metrics {
