@@ -1441,14 +1441,15 @@ impl Generator for GraphGenerator {
         let seed_u64 = u64::from_le_bytes(seed[0..8].try_into().unwrap());
         let mut rng = rand::rngs::StdRng::seed_from_u64(seed_u64);
 
-        // Downsample the graph if needed
-        let metrics = if let Some(max) = self.max_nodes {
-            if metrics.graph.nodes.len() > max {
-                let downsampled_graph = metrics.graph.downsample(max, seed_u64);
+        // Downsample the graph if needed - use random count between 9-17
+        let metrics = if self.max_nodes.is_some() {
+            let target_nodes = rng.gen_range(9..=17);
+            if metrics.graph.nodes.len() > target_nodes {
+                let downsampled_graph = metrics.graph.downsample(target_nodes, seed_u64);
                 NeuralMetrics {
                     graph: downsampled_graph,
-                    node_count: max as u32,
-                    connection_count: metrics.connection_count, // Will be recalculated implicitly
+                    node_count: target_nodes as u32,
+                    connection_count: metrics.connection_count,
                     ..metrics.clone()
                 }
             } else {

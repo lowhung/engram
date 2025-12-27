@@ -535,7 +535,7 @@ impl AdjacencyGraph {
         let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
 
         // Generate 6-12 nodes total
-        let node_count = rng.gen_range(6..=12);
+        let node_count = rng.gen_range(9..=17);
         let mut all_nodes: Vec<GraphNode> = Vec::new();
         let mut producers: HashMap<String, Vec<String>> = HashMap::new();
         let mut consumers: HashMap<String, Vec<String>> = HashMap::new();
