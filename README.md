@@ -2,6 +2,17 @@
 
 Generative art from neural network topology. Visualizes module connections from [neuronic](https://github.com/lowhung/neuronic) as dendrite-like graphs.
 
+## Gallery
+
+<p align="center">
+  <img src="samples/engram_1.svg" width="45%" />
+  <img src="samples/engram_22_1766875472392.svg" width="45%" />
+</p>
+<p align="center">
+  <img src="samples/engram_73_1766875933676.svg" width="45%" />
+  <img src="samples/engram_145_1766877709740.svg" width="45%" />
+</p>
+
 ## Usage
 
 ```bash

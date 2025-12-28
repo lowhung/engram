@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 774 774" width="774" height="774">
+  <rect width="100%" height="100%" fill="#74c7ec"/>
+  <path d="M 460.6 254.0 Q 317.9 268.1 287.2 408.1" fill="none" stroke="#181825" stroke-width="2.75" stroke-linecap="round"/>
+<path d="M 217.2 292.9 Q 174.0 334.3 216.7 376.2" fill="none" stroke="#89b4fa" stroke-width="2.63" stroke-linecap="round"/>
+<path d="M 451.1 240.5 Q 329.0 197.9 298.7 323.6" fill="none" stroke="#181825" stroke-width="2.75" stroke-linecap="round"/>
+<path d="M 515.2 323.0 Q 387.8 325.6 292.9 240.6" fill="none" stroke="#f38ba8" stroke-width="2.51" stroke-linecap="round"/>
+<circle cx="363.3" cy="197.0" r="37.3" fill="none" stroke="#11111b" stroke-width="10.0"/>
+<circle cx="363.3" cy="197.0" r="24.9" fill="none" stroke="#11111b" stroke-width="10.0"/>
+<circle cx="363.3" cy="197.0" r="12.4" fill="none" stroke="#11111b" stroke-width="10.0"/>
+<circle cx="514.9" cy="205.6" r="72.7" fill="#181825"/>
+<circle cx="581.9" cy="347.7" r="71.1" fill="#f38ba8"/>
+<circle cx="534.7" cy="485.2" r="43.6" fill="#11111b"/>
+<circle cx="416.9" cy="533.3" r="43.6" fill="#89b4fa"/>
+<circle cx="301.0" cy="557.5" r="84.1" fill="#cba6f7"/>
+<circle cx="216.1" cy="471.3" r="95.1" fill="#f38ba8"/>
+<circle cx="227.6" cy="362.4" r="80.9" fill="#11111b"/>
+<circle cx="217.7" cy="212.7" r="80.3" fill="#89b4fa"/>
+</svg>
